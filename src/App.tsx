@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowDownLeft, ArrowUpRight, BarChart3, Bell, Check, CheckCheck, ChevronDown,
   CircleHelp, Clock3, Command, CornerDownLeft, Ellipsis, Headphones, Lightbulb,
@@ -301,7 +301,7 @@ function App() {
   )
 }
 
-function Metric({ icon, label, value, detail, warn = false }: { icon: React.ReactNode; label: string; value: string; detail: string; warn?: boolean }) {
+function Metric({ icon, label, value, detail, warn = false }: { icon: ReactNode; label: string; value: string; detail: string; warn?: boolean }) {
   return <div className="metric-card"><div className={'metric-icon ' + (warn ? 'metric-warn' : '')}>{icon}</div><span className="metric-label">{label}</span><strong className="metric-value">{value}</strong><span className="metric-detail">{detail}</span></div>
 }
 
