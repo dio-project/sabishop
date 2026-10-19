@@ -1,308 +1,420 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import {
-  ArrowDownLeft, ArrowUpRight, BarChart3, Bell, Check, CheckCheck, ChevronDown,
-  CircleHelp, Clock3, Command, CornerDownLeft, Ellipsis, Headphones, Lightbulb,
-  Menu, Mic, Package, Search, Send, Settings2, ShoppingBasket, Sparkles, Store,
-  TrendingUp, Volume2, X
-} from 'lucide-react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import type { Session } from '@supabase/supabase-js'
+import { supabase } from './lib/supabase'
+import './live.css'
 
-type Product = { id: string; name: string; category: string; price: number; cost: number; stock: number; threshold: number; emoji: string }
-type SaleLine = { productId: string; name: string; qty: number; unitPrice: number; unitCost: number }
-type Sale = { id: string; lines: SaleLine[]; total: number; createdAt: string }
-type Reservation = { id: string; productId: string; name: string; qty: number; status: 'active' | 'cancelled' }
-type Draft = { lines: SaleLine[]; total: number }
-type Message = { id: string; from: 'user' | 'bot'; text: string; time: string; draft?: Draft; tag?: string }
-type SavedState = { products: Product[]; sales: Sale[]; reservations: Reservation[] }
-
-const seedProducts: Product[] = [
-  { id: 'indomie', name: 'Indomie Chicken', category: 'Noodles', price: 500, cost: 390, stock: 42, threshold: 15, emoji: '🍜' },
-  { id: 'peak', name: 'Peak Milk Sachet', category: 'Dairy', price: 250, cost: 190, stock: 18, threshold: 20, emoji: '🥛' },
-  { id: 'pasta', name: 'Golden Penny Pasta', category: 'Groceries', price: 850, cost: 680, stock: 27, threshold: 10, emoji: '🍝' },
-  { id: 'sugar', name: 'Dangote Sugar 500g', category: 'Groceries', price: 1200, cost: 980, stock: 9, threshold: 12, emoji: '🧂' },
-  { id: 'milo', name: 'Milo Sachet', category: 'Beverages', price: 200, cost: 150, stock: 31, threshold: 12, emoji: '🍫' },
-  { id: 'water', name: 'Eva Water 75cl', category: 'Drinks', price: 300, cost: 180, stock: 56, threshold: 18, emoji: '💧' },
-]
-const starterMessages: Message[] = [
-  { id: 'welcome', from: 'bot', text: 'Good afternoon! 👋🏾\n\nI’m Sabi, your shop assistant. Tell me what sold, ask about your stock, or let me help you plan your next restock.', time: '2:41 PM', tag: 'SABI ASSISTANT' },
-  { id: 'hint', from: 'bot', text: 'Try “I sold 3 Indomie and 2 Milo” — I’ll check the items and prices with you before recording the sale.', time: '2:41 PM' },
-]
-const money = (value: number) => new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 0 }).format(value)
-const clock = () => new Date().toLocaleTimeString('en-NG', { hour: 'numeric', minute: '2-digit' })
-const newId = () => Math.random().toString(36).slice(2, 10)
-
-function initialSavedState(): SavedState {
-  try {
-    const raw = localStorage.getItem('sabishop-demo-v1')
-    if (raw) return JSON.parse(raw) as SavedState
-  } catch { /* Continue with seed data if browser storage is unavailable. */ }
-  return { products: seedProducts, sales: [], reservations: [] }
+type Product = {
+  id: string
+  shop_id: string
+  name: string
+  normalized_name: string
+  category: string
+  selling_price_kobo: number
+  unit_cost_kobo: number
+  stock_quantity: number
+  low_stock_threshold: number
+  is_active: boolean
 }
+type SaleLine = { product_id: string; name: string; quantity: number; unit_price_kobo: number; unit_cost_kobo: number }
+type SaleDraft = { items: SaleLine[]; total_kobo: number; idempotency_key: string }
+type ChatMessage = { id: string; role: 'assistant' | 'user'; text: string; draft?: SaleDraft }
+type Sale = { id: string; total_kobo: number; created_at: string }
+type Tab = 'assistant' | 'inventory' | 'sales'
 
-function App() {
-  const [saved, setSaved] = useState<SavedState>(initialSavedState)
-  const [messages, setMessages] = useState<Message[]>(starterMessages)
+const sampleProducts = [
+  { name: 'Indomie Chicken', category: 'Noodles', price: 500, cost: 390, stock: 42, threshold: 15 },
+  { name: 'Peak Milk Sachet', category: 'Dairy', price: 250, cost: 190, stock: 18, threshold: 20 },
+  { name: 'Golden Penny Pasta', category: 'Groceries', price: 850, cost: 680, stock: 27, threshold: 10 },
+  { name: 'Dangote Sugar 500g', category: 'Groceries', price: 1200, cost: 980, stock: 9, threshold: 12 },
+  { name: 'Milo Sachet', category: 'Beverages', price: 200, cost: 150, stock: 31, threshold: 12 },
+  { name: 'Eva Water 75cl', category: 'Drinks', price: 300, cost: 180, stock: 56, threshold: 18 },
+]
+const money = (kobo: number) => new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 2 }).format(kobo / 100)
+const uid = () => crypto.randomUUID()
+const greeting: ChatMessage[] = [{ id: 'welcome', role: 'assistant', text: 'Good afternoon. I’m Sabi, your shop assistant. Tell me what sold, ask about stock, or request a summary. I’ll check the details and ask before recording a sale.' }]
+
+export default function App() {
+  const [session, setSession] = useState<Session | null>(null)
+  const [authReady, setAuthReady] = useState(false)
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [shopName, setShopName] = useState('Dio’s Provision Store')
+  const [shopId, setShopId] = useState('')
+  const [shopTitle, setShopTitle] = useState('')
+  const [products, setProducts] = useState<Product[]>([])
+  const [sales, setSales] = useState<Sale[]>([])
+  const [tab, setTab] = useState<Tab>('assistant')
+  const [messages, setMessages] = useState<ChatMessage[]>(greeting)
   const [input, setInput] = useState('')
-  const [role, setRole] = useState<'retailer' | 'customer'>('retailer')
-  const [recording, setRecording] = useState(false)
-  const [mobileNav, setMobileNav] = useState(false)
-  const [showStock, setShowStock] = useState(false)
-  const [showHelp, setShowHelp] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
-  const bottomRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const [authError, setAuthError] = useState('')
+  const [productForm, setProductForm] = useState({ name: '', category: 'General', price: '', cost: '', stock: '', threshold: '5' })
+  const [restockValues, setRestockValues] = useState<Record<string, string>>({})
 
   useEffect(() => {
-    try { localStorage.setItem('sabishop-demo-v1', JSON.stringify(saved)) } catch { /* Demo remains usable for this session. */ }
-  }, [saved])
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }) }, [messages])
-
-  const activeReservations = useMemo(() => saved.reservations.filter(r => r.status === 'active'), [saved.reservations])
-  const reservedByProduct = useMemo(() => activeReservations.reduce<Record<string, number>>((acc, r) => {
-    acc[r.productId] = (acc[r.productId] ?? 0) + r.qty
-    return acc
-  }, {}), [activeReservations])
-  const todaySales = saved.sales.reduce((sum, sale) => sum + sale.total, 0)
-  const todayProfit = saved.sales.reduce((sum, sale) => sum + sale.lines.reduce((n, line) => n + (line.unitPrice - line.unitCost) * line.qty, 0), 0)
-  const lowStock = saved.products.filter(p => p.stock - (reservedByProduct[p.id] ?? 0) <= p.threshold)
-
-  const addMessage = (message: Omit<Message, 'id' | 'time'> & { time?: string }) => {
-    setMessages(prev => [...prev, { ...message, id: newId(), time: message.time ?? clock() }])
-  }
-  const matchProduct = (text: string) => {
-    const normalized = text.toLowerCase()
-    return saved.products.find(p => normalized.includes(p.name.toLowerCase()) || normalized.includes(p.id.replaceAll('-', ' ')))
-  }
-
-  function parseSale(text: string): Draft | null {
-    const lower = text.toLowerCase()
-    if (!/(sold|sell|sale|record|customer bought|just sold)/.test(lower)) return null
-    const lines: SaleLine[] = []
-    for (const product of saved.products) {
-      const name = product.name.toLowerCase()
-      const nameAt = lower.indexOf(name)
-      const idAt = lower.indexOf(product.id.replaceAll('-', ' '))
-      const foundAt = nameAt >= 0 ? nameAt : idAt
-      if (foundAt < 0) continue
-      const before = lower.slice(Math.max(0, foundAt - 18), foundAt)
-      const after = lower.slice(foundAt + (nameAt >= 0 ? name.length : product.id.length))
-      const beforeMatch = before.match(/(\d+)\s*(?:x\s*)?$/)
-      const afterMatch = after.match(/^\s*(?:x\s*)?(\d+)/)
-      const qty = Number(beforeMatch?.[1] ?? afterMatch?.[1] ?? 1)
-      if (qty > 0 && Number.isSafeInteger(qty)) lines.push({ productId: product.id, name: product.name, qty, unitPrice: product.price, unitCost: product.cost })
-    }
-    if (!lines.length) {
-      const product = matchProduct(text)
-      if (product) lines.push({ productId: product.id, name: product.name, qty: Number(lower.match(/\b(\d+)\b/)?.[1] ?? 1), unitPrice: product.price, unitCost: product.cost })
-    }
-    if (!lines.length) return null
-    return { lines, total: lines.reduce((sum, line) => sum + line.qty * line.unitPrice, 0) }
-  }
-
-  function respond(text: string) {
-    const lower = text.toLowerCase()
-    if (/(help|what can you do|examples)/.test(lower)) {
-      addMessage({ from: 'bot', text: 'I can help record sales, check available stock, spot items to restock, and summarise recorded sales and gross profit.\n\nTry:\n• “I sold 3 Indomie Chicken”\n• “What should I restock?”\n• “How much did I make today?”\n• “Do you have Peak Milk?”' })
-      return
-    }
-    if (/(restock|low stock|running low|buy more|reorder)/.test(lower)) {
-      const items = lowStock.length ? lowStock.map(p => '• ' + p.emoji + ' ' + p.name + ': ' + Math.max(0, p.stock - (reservedByProduct[p.id] ?? 0)) + ' available (threshold ' + p.threshold + ')').join('\n') : 'Nothing is below its current restock threshold.'
-      addMessage({ from: 'bot', text: 'Restock check, based on the stock currently recorded:\n\n' + items + '\n\nThis is a threshold alert, not a prediction of future demand.', tag: 'STOCK CHECK' })
-      return
-    }
-    if (/(profit|made today|sales today|revenue|how much.*today|performance|summary|business.*today)/.test(lower)) {
-      const units = saved.sales.reduce((sum, sale) => sum + sale.lines.reduce((n, line) => n + line.qty, 0), 0)
-      addMessage({ from: 'bot', text: 'Your recorded demo-session results:\n\nRevenue: ' + money(todaySales) + '\nEstimated gross profit: ' + money(todayProfit) + '\nCompleted sales: ' + saved.sales.length + '\nUnits sold: ' + units + '\n\nGross profit subtracts recorded cost of goods only. It excludes rent, transport, wages and other operating expenses.', tag: 'BUSINESS SNAPSHOT' })
-      return
-    }
-    if (/(reserve|keep.*aside|hold.*for me|book)/.test(lower) && role === 'customer') {
-      const product = matchProduct(text)
-      const qty = Number(lower.match(/\b(\d+)\b/)?.[1] ?? 1)
-      if (!product) { addMessage({ from: 'bot', text: 'Which item would you like me to reserve? Try “Reserve 2 Indomie Chicken”.' }); return }
-      const available = product.stock - (reservedByProduct[product.id] ?? 0)
-      if (qty > available) { addMessage({ from: 'bot', text: 'I can’t reserve ' + qty + ' ' + product.name + ': only ' + available + ' are available right now.' }); return }
-      const reservation: Reservation = { id: newId(), productId: product.id, name: product.name, qty, status: 'active' }
-      setSaved(prev => ({ ...prev, reservations: [...prev.reservations, reservation] }))
-      addMessage({ from: 'bot', text: 'Reservation confirmed: ' + qty + ' × ' + product.name + '.\n\nPlease collect it from the shop and pay there. This is a demo reservation.', tag: 'RESERVATION CONFIRMED' })
-      return
-    }
-    if (/(cancel.*reservation|cancel.*reserve)/.test(lower) && role === 'customer') {
-      const reservation = activeReservations.at(-1)
-      if (!reservation) addMessage({ from: 'bot', text: 'There are no active demo reservations to cancel.' })
-      else {
-        setSaved(prev => ({ ...prev, reservations: prev.reservations.map(r => r.id === reservation.id ? { ...r, status: 'cancelled' } : r) }))
-        addMessage({ from: 'bot', text: 'Cancelled your reservation for ' + reservation.qty + ' × ' + reservation.name + '. The items are available again.' })
-      }
-      return
-    }
-    if (/(available|in stock|do you have|got any|how many|stock of)/.test(lower)) {
-      const product = matchProduct(text)
-      if (!product) { addMessage({ from: 'bot', text: 'I can check: ' + saved.products.map(p => p.name).join(', ') + '. Which one do you need?' }); return }
-      const available = product.stock - (reservedByProduct[product.id] ?? 0)
-      addMessage({ from: 'bot', text: (available > 0 ? 'Yes — ' + product.name + ' is available.' : 'Sorry, ' + product.name + ' is currently unavailable.') + '\n\n' + available + ' available · ' + money(product.price) + ' each' + (role === 'customer' && available > 0 ? '\n\nSay “Reserve 2 ' + product.name + '” to hold some for collection.' : ''), tag: 'LIVE STOCK LOOKUP' })
-      return
-    }
-    if (/(sold|sell|sale|record|customer bought|just sold)/.test(lower) && role === 'retailer') {
-      const draft = parseSale(text)
-      if (!draft) { addMessage({ from: 'bot', text: 'I couldn’t confidently match the items. Include the product name and quantity, e.g. “I sold 3 Indomie Chicken”. I won’t change stock until you confirm.' }); return }
-      const unavailable = draft.lines.filter(line => {
-        const product = saved.products.find(p => p.id === line.productId)
-        return !product || line.qty > product.stock - (reservedByProduct[line.productId] ?? 0)
-      })
-      if (unavailable.length) { addMessage({ from: 'bot', text: 'I can’t prepare that sale because ' + unavailable.map(line => line.name).join(', ') + ' has insufficient available stock. Nothing has been recorded.' }); return }
-      addMessage({ from: 'bot', text: 'Please check the items and total below. Stock will only change after you confirm.', draft, tag: 'CONFIRM SALE' })
-      return
-    }
-    addMessage({ from: 'bot', text: role === 'retailer'
-      ? 'I can help with sales, stock checks and business summaries. Try “I sold 3 Indomie”, “What should I restock?” or “How much did I make today?”'
-      : 'Ask about product availability or reserve items for collection. For example: “Do you have Peak Milk?”' })
-  }
-
-  function send(textOverride?: string) {
-    const text = (textOverride ?? input).trim()
-    if (!text) return
-    addMessage({ from: 'user', text })
-    setInput('')
-    respond(text)
-    inputRef.current?.focus()
-  }
-
-  function confirmSale(draft: Draft) {
-    const insufficient = draft.lines.find(line => {
-      const product = saved.products.find(p => p.id === line.productId)
-      return !product || line.qty > product.stock - (reservedByProduct[line.productId] ?? 0)
+    if (!supabase) { setAuthReady(true); return }
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session)
+      setAuthReady(true)
     })
-    if (insufficient) { addMessage({ from: 'bot', text: 'Stock changed while this sale awaited confirmation. ' + insufficient.name + ' is no longer available in that quantity. Please try again.' }); return }
-    const sale: Sale = { id: newId(), lines: draft.lines, total: draft.total, createdAt: new Date().toISOString() }
-    setSaved(prev => ({
-      ...prev,
-      products: prev.products.map(p => {
-        const line = draft.lines.find(item => item.productId === p.id)
-        return line ? { ...p, stock: p.stock - line.qty } : p
-      }),
-      sales: [...prev.sales, sale],
-    }))
-    setMessages(prev => prev.map(m => m.draft === draft ? { ...m, draft: undefined, tag: 'SALE RECORDED', text: 'Sale recorded successfully.\n\n' + draft.lines.map(line => line.qty + ' × ' + line.name).join('\n') + '\nTotal: ' + money(draft.total) + '\n\nStock has been updated in this browser demo.' } : m))
-    addMessage({ from: 'bot', text: 'Done. ' + money(draft.total) + ' in sales recorded. I’ve updated the demo stock balance.', tag: 'TRANSACTION COMPLETE' })
-  }
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession))
+    return () => data.subscription.unsubscribe()
+  }, [])
 
-  function startVoice() {
-    type RecognitionResult = { results: { [index: number]: { [index: number]: { transcript: string } } } }
-    type Recognition = { lang: string; onresult: (event: RecognitionResult) => void; onerror: () => void; onend: () => void; start: () => void }
-    const speechWindow = window as Window & { SpeechRecognition?: new () => Recognition; webkitSpeechRecognition?: new () => Recognition }
-    const Speech = speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition
-    if (!Speech) { setNotice('Voice typing is not supported in this browser. Type your message instead.'); window.setTimeout(() => setNotice(''), 3500); return }
+  useEffect(() => {
+    if (!session || !supabase) {
+      setShopId('')
+      setProducts([])
+      setSales([])
+      return
+    }
+    void loadWorkspace(session.user.id)
+  }, [session?.user.id])
+
+  const lowStock = useMemo(() => products.filter(p => p.is_active && p.stock_quantity <= p.low_stock_threshold), [products])
+  const todaySales = useMemo(() => sales.filter(s => new Date(s.created_at).toDateString() === new Date().toDateString()), [sales])
+  const todayRevenue = todaySales.reduce((sum, s) => sum + Number(s.total_kobo), 0)
+
+  async function loadWorkspace(userId: string) {
+    if (!supabase) return
+    setLoading(true)
     try {
-      const recognition = new Speech()
-      recognition.lang = 'en-NG'
-      recognition.onresult = event => setInput(event.results[0][0].transcript)
-      recognition.onerror = () => { setRecording(false); setNotice('Could not hear that clearly. Try again or type your message.'); window.setTimeout(() => setNotice(''), 3500) }
-      recognition.onend = () => setRecording(false)
-      setRecording(true)
-      recognition.start()
-    } catch {
-      setRecording(false)
-      setNotice('Microphone access is unavailable. Check browser permissions.')
-      window.setTimeout(() => setNotice(''), 3500)
+      let { data: membership, error: membershipError } = await supabase.from('shop_members').select('shop_id, role').eq('user_id', userId).limit(1).maybeSingle()
+      if (membershipError) throw membershipError
+      let id = membership?.shop_id as string | undefined
+      if (!id) {
+        const { data, error } = await supabase.rpc('create_shop_with_owner', { p_name: shopName.trim() || 'My Provision Store' })
+        if (error) throw error
+        id = data as string
+      }
+      if (!id) throw new Error('Could not create or load your shop.')
+      setShopId(id)
+      const { data: shop, error: shopError } = await supabase.from('shops').select('name').eq('id', id).single()
+      if (shopError) throw shopError
+      setShopTitle(shop.name)
+      const { data: currentProducts, error: productsError } = await supabase.from('products').select('*').eq('shop_id', id).eq('is_active', true).order('name')
+      if (productsError) throw productsError
+      let productRows = (currentProducts ?? []) as Product[]
+      if (!productRows.length) {
+        const seedRows = sampleProducts.map(p => ({
+          shop_id: id, name: p.name, normalized_name: p.name.toLowerCase(), category: p.category,
+          selling_price_kobo: p.price * 100, unit_cost_kobo: p.cost * 100,
+          stock_quantity: p.stock, low_stock_threshold: p.threshold, is_active: true,
+        }))
+        const { data: seeded, error: seedError } = await supabase.from('products').insert(seedRows).select('*').order('name')
+        if (seedError) throw seedError
+        productRows = (seeded ?? []) as Product[]
+        setNotice('A sample catalogue was added. Replace sample stock counts and prices before using real shop records.')
+      }
+      setProducts(productRows)
+      const { data: currentSales, error: salesError } = await supabase.from('sales').select('id,total_kobo,created_at').eq('shop_id', id).eq('status', 'completed').order('created_at', { ascending: false }).limit(100)
+      if (salesError) throw salesError
+      setSales((currentSales ?? []) as Sale[])
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Could not load the shop workspace.')
+    } finally {
+      setLoading(false)
     }
   }
 
-  function resetDemo() {
-    setSaved({ products: seedProducts, sales: [], reservations: [] })
-    setMessages(starterMessages)
-    setNotice('Demo data reset.')
-    window.setTimeout(() => setNotice(''), 2500)
+  async function submitAuth(event: FormEvent) {
+    event.preventDefault()
+    if (!supabase) return
+    setBusy(true)
+    setAuthError('')
+    try {
+      if (authMode === 'signup') {
+        const { data, error } = await supabase.auth.signUp({ email: email.trim(), password })
+        if (error) throw error
+        if (!data.session) {
+          setAuthError('Account created. Check your email for the confirmation link, then sign in.')
+        } else {
+          setNotice('Account created. Setting up your shop…')
+        }
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
+        if (error) throw error
+      }
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Authentication failed.')
+    } finally {
+      setBusy(false)
+    }
   }
 
-  return (
-    <div className="app-shell">
-      {mobileNav && <button className="scrim" aria-label="Close navigation" onClick={() => setMobileNav(false)} />}
-      <aside className={'sidebar ' + (mobileNav ? 'sidebar-open' : '')}>
-        <div className="brand-lockup"><div className="brand-mark"><ShoppingBasket size={21} strokeWidth={2.5} /></div><div><span className="brand-name">sabi<span>shop</span></span><span className="brand-caption">YOUR SHOP, IN CONTROL</span></div><button className="icon-button mobile-close" aria-label="Close navigation" onClick={() => setMobileNav(false)}><X size={18} /></button></div>
-        <button className="shop-switcher" onClick={() => setNotice('Shop switching will be added in the multi-shop release.')}><div className="shop-avatar"><Store size={18} /></div><div className="shop-switcher-copy"><strong>Dio’s Provision Store</strong><span>Retailer workspace</span></div><ChevronDown size={15} className="muted-icon" /></button>
-        <div className="nav-label">WORKSPACE</div>
-        <button className={'nav-item ' + (!showStock ? 'active' : '')} onClick={() => { setShowStock(false); setMobileNav(false) }}><Command size={17} /><span>Assistant</span><span className="nav-pulse" /></button>
-        <button className={'nav-item ' + (showStock ? 'active' : '')} onClick={() => { setShowStock(!showStock); setMobileNav(false) }}><Package size={17} /><span>Inventory</span><span className="nav-count">{saved.products.length}</span></button>
-        <button className="nav-item" onClick={() => send('How much did I make today?')}><BarChart3 size={17} /><span>Business insights</span></button>
-        <button className="nav-item" onClick={() => send('What should I restock?')}><Bell size={17} /><span>Stock alerts</span>{lowStock.length > 0 && <span className="alert-count">{lowStock.length}</span>}</button>
-        <div className="sidebar-divider" /><div className="nav-label">DEMO MODE</div>
-        <div className="demo-note"><div className="demo-note-icon"><Sparkles size={15} /></div><div><strong>Interactive preview</strong><p>Try shop tasks. Demo changes stay in this browser.</p></div></div>
-        <div className="sidebar-bottom"><div className="support-card"><div className="support-icon"><Headphones size={17} /></div><div><strong>Need a hand?</strong><span>Explore what Sabi can do</span></div><button className="icon-button" aria-label="Show help" onClick={() => setShowHelp(true)}><CircleHelp size={16} /></button></div>
-          <button className="profile-row" onClick={() => setNotice('Signed in as demo retailer. Authentication will be connected with Supabase.')}><div className="profile-avatar">D</div><div className="profile-copy"><strong>Dio</strong><span>Shop owner</span></div><Ellipsis size={19} className="muted-icon" /></button></div>
-      </aside>
+  async function signOut() {
+    if (!supabase) return
+    await supabase.auth.signOut()
+    setMessages(greeting)
+    setTab('assistant')
+  }
 
-      <main className="main-panel">
-        <header className="topbar"><div className="topbar-left"><button className="icon-button menu-button" aria-label="Open navigation" onClick={() => setMobileNav(true)}><Menu size={20} /></button><div className="breadcrumb"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{showStock ? 'Inventory' : 'Assistant'}</strong></div></div>
-          <div className="topbar-right"><div className="demo-pill"><span className="status-dot" /> DEMO ENVIRONMENT</div><button className="icon-button topbar-help" aria-label="Help" onClick={() => setShowHelp(true)}><CircleHelp size={18} /></button><button className="icon-button" aria-label="Notifications" onClick={() => send('What should I restock?')}><Bell size={18} />{lowStock.length > 0 && <span className="notification-dot" />}</button></div></header>
+  function addMessage(message: Omit<ChatMessage, 'id'>) {
+    setMessages(prev => [...prev, { ...message, id: uid() }])
+  }
 
-        {showStock ? <section className="inventory-page">
-          <div className="page-heading"><div><div className="eyebrow">YOUR SHOP AT A GLANCE</div><h1>Inventory</h1><p>Know what’s on the shelf before your next customer asks.</p></div><button className="secondary-button" onClick={resetDemo}><Settings2 size={16} /> Reset demo</button></div>
-          <div className="metric-grid"><Metric icon={<Package size={18} />} label="Products tracked" value={String(saved.products.length)} detail="Across your shop" /><Metric icon={<Bell size={18} />} label="Need attention" value={String(lowStock.length)} detail="At or below threshold" warn={lowStock.length > 0} /><Metric icon={<ShoppingBasket size={18} />} label="Units reserved" value={String(activeReservations.reduce((sum, r) => sum + r.qty, 0))} detail="Not yet collected" /></div>
-          <div className="inventory-card"><div className="card-heading"><div><h2>Stock on hand</h2><p>Available quantity excludes active reservations.</p></div><span className="table-tag">LIVE DEMO DATA</span></div>
-            <div className="product-table"><div className="product-row product-table-head"><span>PRODUCT</span><span>SELLING PRICE</span><span>AVAILABLE</span><span>STATUS</span></div>
-              {saved.products.map(product => { const available = product.stock - (reservedByProduct[product.id] ?? 0); const isLow = available <= product.threshold; return <div className="product-row" key={product.id}><div className="product-name-cell"><span className="product-emoji">{product.emoji}</span><div><strong>{product.name}</strong><small>{product.category}</small></div></div><strong>{money(product.price)}</strong><strong className={isLow ? 'low-number' : ''}>{available} <small>units</small></strong><span className={'stock-status ' + (isLow ? 'status-low' : 'status-good')}><i />{isLow ? 'Restock soon' : 'In stock'}</span></div> })}
+  function resolveProduct(name: string): Product | undefined {
+    const normalized = name.trim().toLowerCase().replace(/\s+/g, ' ')
+    return products.find(p => p.normalized_name === normalized || p.name.toLowerCase() === normalized)
+      ?? products.find(p => normalized.length > 2 && (p.normalized_name.includes(normalized) || normalized.includes(p.normalized_name)))
+  }
+
+  function fallbackInterpretation(text: string) {
+    const lower = text.toLowerCase()
+    if (/(profit|revenue|sales today|how much.*today|business summary|performance)/.test(lower)) return { intent: 'business_summary', items: [], confidence: 0.5, needs_confirmation: false, clarifying_question: '' }
+    if (/(restock|low stock|running low|reorder|buy more)/.test(lower)) return { intent: 'restock_advice', items: [], confidence: 0.5, needs_confirmation: false, clarifying_question: '' }
+    const matched = products.filter(p => lower.includes(p.name.toLowerCase()))
+    if (/(stock|available|do you have|how many|in stock)/.test(lower)) return { intent: 'check_stock', items: matched.map(p => ({ product_name: p.name, quantity: 1 })), confidence: matched.length ? 0.7 : 0.3, needs_confirmation: false, clarifying_question: '' }
+    if (/(sold|sale|record|customer bought|just sold)/.test(lower)) {
+      const items = matched.map(p => {
+        const before = lower.slice(Math.max(0, lower.indexOf(p.name.toLowerCase()) - 18), lower.indexOf(p.name.toLowerCase()))
+        const after = lower.slice(lower.indexOf(p.name.toLowerCase()) + p.name.length)
+        const qty = Number(before.match(/(\d+)\s*(?:x\s*)?$/)?.[1] ?? after.match(/^\s*(?:x\s*)?(\d+)/)?.[1] ?? 1)
+        return { product_name: p.name, quantity: qty }
+      })
+      return { intent: items.length ? 'record_sale' : 'unknown', items, confidence: items.length ? 0.6 : 0.2, needs_confirmation: true, clarifying_question: items.length ? '' : 'Which product and quantity did you sell?' }
+    }
+    return { intent: 'unknown', items: [], confidence: 0, needs_confirmation: false, clarifying_question: 'Try “I sold 3 Indomie Chicken”, “What should I restock?” or “Do you have Peak Milk Sachet?”' }
+  }
+
+  async function sendCommand(rawText?: string) {
+    const text = (rawText ?? input).trim()
+    if (!text || !supabase || !shopId || busy) return
+    setInput('')
+    addMessage({ role: 'user', text })
+    setBusy(true)
+    try {
+      let interpreted: ReturnType<typeof fallbackInterpretation>
+      const { data, error } = await supabase.functions.invoke('interpret-command', {
+        body: { text, product_names: products.map(p => p.name) },
+      })
+      if (error || !data || typeof data.intent !== 'string') {
+        interpreted = fallbackInterpretation(text)
+        if (interpreted.intent === 'unknown') {
+          addMessage({ role: 'assistant', text: 'The AI interpreter is not configured or is temporarily unavailable. I could not safely resolve that request. You can still use the inventory and sales screens, or try an exact product name with a supported command.' })
+          return
+        }
+        addMessage({ role: 'assistant', text: 'AI interpretation is unavailable, so I used limited exact-name matching. Please review the result carefully.' })
+      } else {
+        interpreted = data
+      }
+
+      if (interpreted.intent === 'record_sale') {
+        const lines: SaleLine[] = []
+        for (const item of interpreted.items) {
+          const product = resolveProduct(item.product_name)
+          if (!product) {
+            addMessage({ role: 'assistant', text: 'I could not match “' + item.product_name + '” to a product in your catalogue. No stock was changed. Check Inventory or use the exact product name.' })
+            return
+          }
+          if (!Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 100000) {
+            addMessage({ role: 'assistant', text: 'That quantity does not look valid. Nothing was recorded.' })
+            return
+          }
+          const existing = lines.find(line => line.product_id === product.id)
+          if (existing) existing.quantity += item.quantity
+          else lines.push({ product_id: product.id, name: product.name, quantity: item.quantity, unit_price_kobo: Number(product.selling_price_kobo), unit_cost_kobo: Number(product.unit_cost_kobo) })
+        }
+        if (!lines.length) {
+          addMessage({ role: 'assistant', text: interpreted.clarifying_question || 'Which product and quantity did you sell? No changes have been made.' })
+          return
+        }
+        const shortage = lines.find(line => {
+          const product = products.find(p => p.id === line.product_id)
+          return !product || product.stock_quantity < line.quantity
+        })
+        if (shortage) {
+          addMessage({ role: 'assistant', text: 'I cannot prepare this sale: there are not enough units of ' + shortage.name + ' in recorded stock. Nothing has been recorded.' })
+          return
+        }
+        const draft: SaleDraft = { items: lines, total_kobo: lines.reduce((sum, line) => sum + line.quantity * line.unit_price_kobo, 0), idempotency_key: uid() }
+        addMessage({ role: 'assistant', text: 'Please review the sale below. Stock will only change after you confirm.', draft })
+        return
+      }
+      if (interpreted.intent === 'check_stock') {
+        const selected = interpreted.items.map(item => resolveProduct(item.product_name)).filter((p): p is Product => Boolean(p))
+        if (!selected.length) {
+          addMessage({ role: 'assistant', text: 'Which item should I check? Current catalogue: ' + products.map(p => p.name).join(', ') + '.' })
+        } else {
+          addMessage({ role: 'assistant', text: selected.map(p => p.name + ': ' + p.stock_quantity + ' units recorded, ' + money(Number(p.selling_price_kobo)) + ' each' + (p.stock_quantity <= p.low_stock_threshold ? ' — at or below the restock threshold.' : '.')).join('\n') })
+        }
+        return
+      }
+      if (interpreted.intent === 'business_summary') {
+        const sum = todaySales.reduce((n, sale) => n + Number(sale.total_kobo), 0)
+        addMessage({ role: 'assistant', text: 'Recorded sales for today: ' + money(sum) + '\nCompleted transactions: ' + todaySales.length + '\n\nGross profit requires the recorded item-level cost snapshots. This summary currently reports revenue only; it is not net profit.' })
+        return
+      }
+      if (interpreted.intent === 'restock_advice') {
+        addMessage({ role: 'assistant', text: lowStock.length ? 'Items at or below their configured threshold:\n' + lowStock.map(p => '• ' + p.name + ': ' + p.stock_quantity + ' left (threshold ' + p.low_stock_threshold + ')').join('\n') + '\n\nThese are threshold alerts, not a demand forecast.' : 'No active products are at or below their configured stock thresholds.' })
+        return
+      }
+      if (interpreted.intent === 'cancel_reservation' || interpreted.intent === 'reserve_item') {
+        addMessage({ role: 'assistant', text: 'Customer reservations are not yet enabled in this live workspace. I have not created or cancelled a reservation.' })
+        return
+      }
+      addMessage({ role: 'assistant', text: interpreted.clarifying_question || 'I’m not sure what you want me to do. Try a stock check, a restock review, or a sale with exact product names.' })
+    } catch (error) {
+      addMessage({ role: 'assistant', text: error instanceof Error ? error.message : 'I could not process that request. No transaction was recorded.' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function confirmSale(draft: SaleDraft) {
+    if (!supabase || !shopId || busy) return
+    setBusy(true)
+    try {
+      const { data, error } = await supabase.rpc('record_sale', {
+        p_shop_id: shopId,
+        p_items: draft.items.map(line => ({ product_id: line.product_id, quantity: line.quantity })),
+        p_idempotency_key: draft.idempotency_key,
+        p_source: 'web',
+      })
+      if (error) throw error
+      const result = data as { sale_id?: string; total_kobo?: number; duplicate?: boolean }
+      if (!result?.sale_id) throw new Error('The database did not confirm the sale.')
+      setMessages(prev => prev.map(m => m.draft?.idempotency_key === draft.idempotency_key
+        ? { ...m, draft: undefined, text: 'Sale recorded in Supabase. Total: ' + money(Number(result.total_kobo ?? draft.total_kobo)) + (result.duplicate ? ' (safe retry; no duplicate stock deduction).' : '') }
+        : m))
+      addMessage({ role: 'assistant', text: 'Database confirmed the sale. I’m refreshing your stock and sales totals.' })
+      await loadWorkspace(session!.user.id)
+    } catch (error) {
+      addMessage({ role: 'assistant', text: 'Sale was not confirmed by the database: ' + (error instanceof Error ? error.message : 'unknown error') + '. Check the inventory and try again; do not assume it was recorded.' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function addProduct(event: FormEvent) {
+    event.preventDefault()
+    if (!supabase || !shopId) return
+    const price = Number(productForm.price)
+    const cost = Number(productForm.cost)
+    const stock = Number(productForm.stock)
+    const threshold = Number(productForm.threshold)
+    if (!productForm.name.trim() || !Number.isFinite(price) || !Number.isFinite(cost) || price < 0 || cost < 0 || !Number.isInteger(stock) || stock < 0 || !Number.isInteger(threshold) || threshold < 0) {
+      setNotice('Enter a product name, valid prices, and non-negative whole-number stock values.')
+      return
+    }
+    setBusy(true)
+    try {
+      const name = productForm.name.trim()
+      const { error } = await supabase.from('products').insert({
+        shop_id: shopId, name, normalized_name: name.toLowerCase(), category: productForm.category.trim() || 'General',
+        selling_price_kobo: Math.round(price * 100), unit_cost_kobo: Math.round(cost * 100),
+        stock_quantity: stock, low_stock_threshold: threshold, is_active: true,
+      })
+      if (error) throw error
+      setProductForm({ name: '', category: 'General', price: '', cost: '', stock: '', threshold: '5' })
+      await loadWorkspace(session!.user.id)
+      setNotice('Product added.')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Could not add product.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function restock(product: Product) {
+    if (!supabase || !shopId) return
+    const quantity = Number(restockValues[product.id])
+    if (!Number.isInteger(quantity) || quantity < 1) { setNotice('Enter a positive whole number to restock.'); return }
+    setBusy(true)
+    try {
+      const { error } = await supabase.rpc('adjust_stock', { p_shop_id: shopId, p_product_id: product.id, p_quantity_delta: quantity, p_note: 'Restock from inventory screen' })
+      if (error) throw error
+      setRestockValues(prev => ({ ...prev, [product.id]: '' }))
+      await loadWorkspace(session!.user.id)
+      setNotice('Stock updated and movement recorded.')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Could not update stock.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!authReady) return <div className="live-auth-wrap"><div className="live-panel live-auth">Loading SabiShop…</div></div>
+  if (!supabase) return <div className="live-auth-wrap"><div className="live-panel live-auth"><h1>SabiShop needs configuration</h1><p>Supabase client configuration is missing. Set the public project URL and publishable key.</p></div></div>
+  if (!session) return <div className="live-auth-wrap"><section className="live-panel live-auth">
+    <div className="live-brand"><div className="live-brand-mark">S</div><div><strong>sabi<span>shop</span></strong><small>YOUR SHOP, IN CONTROL</small></div></div>
+    <h1>{authMode === 'signin' ? 'Welcome back.' : 'Set up your shop.'}</h1>
+    <p>Record sales, keep stock accurate, and ask your assistant about the business. Your records are private to your signed-in shop team.</p>
+    <form onSubmit={submitAuth}>
+      {authMode === 'signup' && <div className="live-field"><label>Shop name</label><input className="live-input" value={shopName} onChange={e => setShopName(e.target.value)} required minLength={2} maxLength={100} /></div>}
+      <div className="live-field"><label>Email address</label><input className="live-input" type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email" /></div>
+      <div className="live-field"><label>Password (at least 8 characters)</label><input className="live-input" type="password" value={password} onChange={e => setPassword(e.target.value)} required minLength={8} autoComplete={authMode === 'signin' ? 'current-password' : 'new-password'} /></div>
+      {authError && <div className="live-alert">{authError}</div>}
+      <button className="live-primary" disabled={busy}>{busy ? 'Please wait…' : authMode === 'signin' ? 'Sign in securely' : 'Create account'}</button>
+    </form>
+    <p className="live-muted">{authMode === 'signin' ? 'New to SabiShop?' : 'Already have an account?'} <button className="live-secondary" onClick={() => { setAuthMode(authMode === 'signin' ? 'signup' : 'signin'); setAuthError('') }}>{authMode === 'signin' ? 'Create an account' : 'Sign in'}</button></p>
+    <p className="live-muted">Sample stock is labelled when first loaded. Replace it with verified quantities before using the app for real transactions.</p>
+  </section></div>
+
+  return <div className="live-shell">
+    <aside className="live-sidebar">
+      <div className="live-brand"><div className="live-brand-mark">S</div><div><strong>sabi<span>shop</span></strong><small>YOUR SHOP, IN CONTROL</small></div></div>
+      <div className="live-shop"><div className="live-shop-icon">▦</div><div><strong>{shopTitle || 'Your shop'}</strong><small>Private retailer workspace</small></div></div>
+      <div className="live-nav-label">WORKSPACE</div>
+      <button className={'live-nav ' + (tab === 'assistant' ? 'active' : '')} onClick={() => setTab('assistant')}>✦ Assistant</button>
+      <button className={'live-nav ' + (tab === 'inventory' ? 'active' : '')} onClick={() => setTab('inventory')}>▦ Inventory <span className="count">{products.length}</span></button>
+      <button className={'live-nav ' + (tab === 'sales' ? 'active' : '')} onClick={() => setTab('sales')}>↗ Sales history</button>
+      <div className="live-side-foot">LIVE SUPABASE WORKSPACE<br/>Your transactions are stored in the database. AI suggestions never update stock without confirmation.</div>
+      <button className="live-nav" onClick={signOut}>↪ Sign out</button>
+    </aside>
+    <main className="live-main">
+      <header className="live-topbar"><div className="live-crumb">Workspace / <strong>{tab === 'assistant' ? 'Assistant' : tab === 'inventory' ? 'Inventory' : 'Sales history'}</strong></div><span className="live-status">● CONNECTED TO DATABASE</span></header>
+      <div className="live-content">
+        <div className="live-heading"><div><div className="live-eyebrow">YOUR SHOP AT A GLANCE</div><h1>{tab === 'assistant' ? 'Sabi assistant' : tab === 'inventory' ? 'Inventory' : 'Sales history'}</h1><p>{tab === 'assistant' ? 'Talk naturally. Check the interpretation before committing a transaction.' : tab === 'inventory' ? 'Manage product prices, recorded stock, and restock movements.' : 'A record of completed sales committed to your database.'}</p></div>{tab === 'assistant' && <button className="live-secondary" onClick={() => void loadWorkspace(session.user.id)}>↻ Refresh data</button>}</div>
+        {tab === 'assistant' && <div className="live-chat-layout">
+          <section className="live-panel live-chat">
+            <div className="live-chat-head"><div className="live-avatar">✦</div><div><strong>Sabi · shop assistant</strong><small>{loading ? 'Loading shop data…' : 'Ready · sale confirmation required'}</small></div><span className="live-pill">AI + verified records</span></div>
+            <div className="live-messages">
+              {messages.map(message => <div key={message.id} className={'live-msg ' + (message.role === 'user' ? 'user' : '')}>{message.text}{message.draft && <div className="live-draft">
+                {message.draft.items.map(line => <div className="live-draft-row" key={line.product_id}><span>{line.quantity} × {line.name} · {money(line.unit_price_kobo)} each</span><strong>{money(line.quantity * line.unit_price_kobo)}</strong></div>)}
+                <div className="live-draft-total"><span>Total sale value</span><span>{money(message.draft.total_kobo)}</span></div>
+                <p className="live-muted">Stock is updated only after database confirmation.</p>
+                <button className="live-primary" disabled={busy} onClick={() => void confirmSale(message.draft!)}>{busy ? 'Saving…' : 'Confirm and record sale'}</button>
+              </div>}<small>{message.role === 'user' ? 'YOU' : 'SABI'}</small></div>)}
+              {busy && <div className="live-msg">Working…<small>SABI</small></div>}
             </div>
-          </div><button className="back-to-chat" onClick={() => setShowStock(false)}>← Back to Sabi assistant</button>
-        </section> : <section className="assistant-layout">
-          <div className="chat-column">
-            <div className="chat-heading"><div className="assistant-identity"><div className="assistant-avatar"><Sparkles size={21} /></div><div><h1>Sabi assistant <span className="verified"><Check size={10} /></span></h1><div className="assistant-subtitle"><span className="status-dot" /> Ready to help <span className="subtitle-divider">·</span> Understands everyday language</div></div></div><div className="chat-heading-actions"><button className="icon-button" title="Voice output" onClick={() => setNotice('Spoken responses will be added with the voice feature.')}><Volume2 size={17} /></button><button className="icon-button" title="Reset demo" onClick={resetDemo}><Ellipsis size={19} /></button></div></div>
-            <div className="mode-banner"><div className="mode-banner-icon"><Lightbulb size={16} /></div><div><strong>What do you need to do today?</strong><span>Tell Sabi like you’d tell a shop assistant. No forms to fill.</span></div><button onClick={() => setShowHelp(true)}>See examples <ArrowUpRight size={13} /></button></div>
-            <div className="chat-scroll"><div className="date-divider"><span>TODAY</span></div><div className="messages">
-              {messages.map(message => <div className={'message-row ' + (message.from === 'user' ? 'message-row-user' : '')} key={message.id}>
-                {message.from === 'bot' && <div className="message-avatar"><Sparkles size={14} /></div>}
-                <div className={'message-content ' + (message.from === 'user' ? 'message-content-user' : '')}>
-                  {message.tag && <div className={'message-tag ' + (/(RECORDED|COMPLETE|CONFIRMED)/.test(message.tag) ? 'tag-success' : '')}>{message.tag}</div>}
-                  <div className={'message-bubble ' + (message.from === 'user' ? 'user-bubble' : 'bot-bubble')}><p>{message.text}</p>
-                    {message.draft && <div className="sale-confirm-card"><div className="sale-card-title"><div><span className="sale-card-icon"><ShoppingBasket size={15} /></span><strong>Sale summary</strong></div><span className="awaiting-pill"><Clock3 size={11} /> Awaiting confirmation</span></div>
-                      {message.draft.lines.map(line => <div className="sale-line" key={line.productId}><div><strong>{line.qty} × {line.name}</strong><span>{money(line.unitPrice)} each</span></div><strong>{money(line.qty * line.unitPrice)}</strong></div>)}
-                      <div className="sale-total"><span>Total sale value</span><strong>{money(message.draft.total)}</strong></div><div className="sale-card-foot"><span><Lightbulb size={13} /> Stock updates after confirmation</span><button onClick={() => confirmSale(message.draft!)}><Check size={14} /> Confirm sale</button></div>
-                    </div>}
-                  </div><div className={'message-meta ' + (message.from === 'user' ? 'meta-user' : '')}><span>{message.time}</span>{message.from === 'user' && <CheckCheck size={13} />}</div>
-                </div>
-              </div>)}<div ref={bottomRef} /></div></div>
-            <div className="composer-area"><div className="quick-prompt-label"><span>QUICK ACTIONS</span><span>Pick one to get started</span></div>
-              <div className="quick-prompts">{(role === 'retailer' ? [
-                { icon: <ArrowDownLeft size={14} />, label: 'Record a sale', prompt: 'I sold 3 Indomie Chicken and 2 Milo Sachet' },
-                { icon: <Package size={14} />, label: 'Check stock', prompt: 'What should I restock?' },
-                { icon: <TrendingUp size={14} />, label: 'Today’s numbers', prompt: 'How much did I make today?' },
-              ] : [
-                { icon: <Search size={14} />, label: 'Find a product', prompt: 'Do you have Peak Milk Sachet?' },
-                { icon: <ShoppingBasket size={14} />, label: 'Reserve an item', prompt: 'Reserve 2 Indomie Chicken' },
-                { icon: <X size={14} />, label: 'Cancel reservation', prompt: 'Cancel my reservation' },
-              ]).map(item => <button className="quick-prompt" key={item.label} onClick={() => send(item.prompt)}>{item.icon}<span>{item.label}</span></button>)}</div>
-              <form className="composer" onSubmit={e => { e.preventDefault(); send() }}><button type="button" className={'composer-icon ' + (recording ? 'recording' : '')} aria-label="Voice input" onClick={startVoice}><Mic size={18} /></button><input ref={inputRef} value={input} onChange={e => setInput(e.target.value)} placeholder={role === 'retailer' ? 'Tell Sabi what happened in your shop…' : 'Ask about a product or reserve an item…'} aria-label="Message Sabi assistant" /><span className="composer-shortcut"><CornerDownLeft size={13} /> Enter</span><button type="submit" className="send-button" disabled={!input.trim()} aria-label="Send message"><Send size={16} /></button></form>
-              <div className="composer-foot"><span><Sparkles size={12} /> Sabi understands your words — you stay in control.</span><span>Built for everyday retail</span></div>
+            <div className="live-composer"><form onSubmit={e => { e.preventDefault(); void sendCommand() }}><input value={input} onChange={e => setInput(e.target.value)} placeholder="e.g. I sold 3 Indomie Chicken…" aria-label="Message Sabi" /><button className="live-primary" disabled={busy || !input.trim()}>Send</button></form>
+              <div className="live-hints"><button onClick={() => void sendCommand('I sold 3 Indomie Chicken and 2 Milo Sachet')}>Record a sale</button><button onClick={() => void sendCommand('What should I restock?')}>Restock advice</button><button onClick={() => void sendCommand('Do you have Peak Milk Sachet?')}>Check stock</button><button onClick={() => void sendCommand('How much did I sell today?')}>Today’s sales</button></div>
             </div>
-          </div>
-          <aside className="insights-panel"><div className="insights-title"><div><h2>Shop snapshot</h2><p>A quick look at your business</p></div><button className="icon-button" aria-label="Open inventory" onClick={() => setShowStock(true)}><ArrowUpRight size={16} /></button></div>
-            <div className="snapshot-card"><div className="snapshot-card-top"><span className="snapshot-icon revenue-icon"><TrendingUp size={17} /></span><span className="snapshot-period">THIS DEMO SESSION</span></div><div className="snapshot-label">Sales recorded</div><div className="snapshot-value">{money(todaySales)}</div><div className="snapshot-sub"><span className="snapshot-dot" /> {saved.sales.length} completed {saved.sales.length === 1 ? 'sale' : 'sales'}</div><div className="snapshot-divider" /><div className="snapshot-card-top"><span className="snapshot-icon profit-icon"><BarChart3 size={17} /></span><span className="snapshot-period">ESTIMATED</span></div><div className="snapshot-label">Gross profit</div><div className="snapshot-value">{money(todayProfit)}</div><div className="snapshot-sub">Before operating expenses</div></div>
-            <div className="side-card stock-alert-card"><div className="side-card-heading"><div className="side-card-title-icon alert-title-icon"><Bell size={15} /></div><div><h3>Needs your attention</h3><p>{lowStock.length ? lowStock.length + ' items at restock threshold' : 'Stock levels look good'}</p></div><span className="side-card-number">{lowStock.length}</span></div>
-              {lowStock.length ? lowStock.slice(0, 3).map(p => <div className="alert-product" key={p.id}><span className="alert-product-emoji">{p.emoji}</span><div className="alert-product-copy"><strong>{p.name}</strong><span>{Math.max(0, p.stock - (reservedByProduct[p.id] ?? 0))} available · threshold {p.threshold}</span></div><span className="alert-indicator" /></div>) : <div className="empty-alert"><Check size={16} /> No items need restocking right now.</div>}
-              <button className="text-action" onClick={() => send('What should I restock?')}>Ask Sabi to review stock <ArrowUpRight size={14} /></button>
-            </div>
-            <div className="side-card role-card"><div className="role-card-heading"><div className="side-card-title-icon role-title-icon"><Store size={15} /></div><div><h3>Preview as</h3><p>Switch the demo perspective</p></div></div>
-              <div className="role-toggle"><button className={role === 'retailer' ? 'role-selected' : ''} onClick={() => { setRole('retailer'); setMessages(starterMessages) }}><Store size={14} /> Shop owner</button><button className={role === 'customer' ? 'role-selected' : ''} onClick={() => { setRole('customer'); setMessages([{ id: newId(), from: 'bot', text: 'Welcome! I can help you check what’s available at Dio’s Provision Store and reserve items for collection. What are you looking for?', time: clock(), tag: 'CUSTOMER ASSISTANT' }]) }}><Search size={14} /> Customer</button></div>
-              <p className="role-note">Same shop data, different tasks. Reservations reduce available stock without recording a sale.</p>
-            </div>
-            <div className="privacy-note"><div className="privacy-lock"><Check size={13} /></div><p><strong>Designed for trusted records</strong><br />Sabi asks before recording a sale. AI suggestions never change stock by themselves.</p></div><button className="reset-link" onClick={resetDemo}>Reset demo data</button>
+          </section>
+          <aside className="live-insights">
+            <div className="live-panel live-stat"><small>SALES RECORDED TODAY</small><strong>{money(todayRevenue)}</strong><p>{todaySales.length} completed transactions</p></div>
+            <div className="live-panel live-stat"><small>STOCK NEEDS ATTENTION</small><strong>{lowStock.length}</strong><p>At or below configured threshold</p></div>
+            <div className="live-panel live-list"><h3>Stock alerts</h3>{lowStock.length ? lowStock.slice(0, 6).map(p => <div className="live-product" key={p.id}><span className="live-product-icon">▦</span><div><strong>{p.name}</strong><small>Threshold {p.low_stock_threshold}</small></div><span className="stock low">{p.stock_quantity}</span></div>) : <div className="live-empty">No products need attention.</div>}<button className="live-secondary" onClick={() => setTab('inventory')}>Open inventory</button></div>
           </aside>
-        </section>}
-        <footer className="app-footer"><span>© 2026 SabiShop</span><span><span className="footer-status-dot" /> Demo mode · Data stored in this browser</span><button onClick={() => setShowHelp(true)}>Help & examples <ArrowUpRight size={12} /></button></footer>
-      </main>
-      {notice && <div className="toast"><Check size={15} />{notice}<button aria-label="Dismiss" onClick={() => setNotice('')}><X size={14} /></button></div>}
-      {showHelp && <div className="modal-backdrop" onClick={() => setShowHelp(false)}><section className="help-modal" onClick={e => e.stopPropagation()}><div className="help-modal-head"><div className="assistant-avatar"><Sparkles size={20} /></div><div><h2>What can Sabi help with?</h2><p>Use everyday language. Check the result before you commit.</p></div><button className="icon-button" aria-label="Close help" onClick={() => setShowHelp(false)}><X size={18} /></button></div>
-        <div className="help-examples">{[
-          { title: 'Record a sale', text: 'I sold 3 Indomie Chicken and 2 Milo Sachet', desc: 'Sabi checks quantity and value, then asks you to confirm.' },
-          { title: 'Review stock', text: 'What should I restock?', desc: 'See products at or below your configured stock threshold.' },
-          { title: 'Understand performance', text: 'How much did I make today?', desc: 'Get recorded revenue and gross profit, with assumptions stated.' },
-          { title: 'Help a customer', text: 'Do you have Peak Milk Sachet?', desc: 'Check availability or reserve items for collection.' },
-        ].map(example => <button key={example.title} className="help-example" onClick={() => { setShowHelp(false); send(example.text) }}><span><strong>{example.title}</strong><small>{example.desc}</small><em>{example.text}</em></span><ArrowUpRight size={16} /></button>)}</div>
-        <div className="help-modal-foot"><Lightbulb size={15} /><span>Demo note: transactions are saved in this browser only. Supabase and live AI will be connected in the next build step.</span></div></section></div>}
-    </div>
-  )
+        </div>}
+        {tab === 'inventory' && <div className="live-panel">
+          <div style={{ padding: 20, borderBottom: '1px solid #edf0eb' }}><h3 style={{ margin: '0 0 6px', fontSize: 14 }}>Add a product</h3><p className="live-muted">Prices are in naira. Stock movements are stored as separate audit records.</p>
+            <form onSubmit={addProduct} className="live-form-grid">
+              <div className="live-field"><label>Product name</label><input value={productForm.name} onChange={e => setProductForm(p => ({ ...p, name: e.target.value }))} required /></div>
+              <div className="live-field"><label>Category</label><input value={productForm.category} onChange={e => setProductForm(p => ({ ...p, category: e.target.value }))} /></div>
+              <div className="live-field"><label>Selling price (₦)</label><input type="number" min="0" step="0.01" value={productForm.price} onChange={e => setProductForm(p => ({ ...p, price: e.target.value }))} required /></div>
+              <div className="live-field"><label>Unit cost (₦)</label><input type="number" min="0" step="0.01" value={productForm.cost} onChange={e => setProductForm(p => ({ ...p, cost: e.target.value }))} required /></div>
+              <div className="live-field"><label>Opening stock</label><input type="number" min="0" step="1" value={productForm.stock} onChange={e => setProductForm(p => ({ ...p, stock: e.target.value }))} required /></div>
+              <div className="live-field"><label>Low-stock threshold</label><input type="number" min="0" step="1" value={productForm.threshold} onChange={e => setProductForm(p => ({ ...p, threshold: e.target.value }))} required /></div>
+              <div><button className="live-primary" disabled={busy}>Add product</button></div>
+            </form>
+          </div>
+          <div className="live-table-wrap"><table className="live-table"><thead><tr><th>PRODUCT</th><th>SELLING PRICE</th><th>UNIT COST</th><th>STOCK</th><th>STATUS</th><th>RESTOCK</th></tr></thead><tbody>
+            {products.map(p => <tr key={p.id}><td><strong>{p.name}</strong><br/><span className="live-muted">{p.category}</span></td><td>{money(Number(p.selling_price_kobo))}</td><td>{money(Number(p.unit_cost_kobo))}</td><td><strong>{p.stock_quantity}</strong></td><td><span className={'live-tag ' + (p.stock_quantity <= p.low_stock_threshold ? 'warn' : '')}>{p.stock_quantity <= p.low_stock_threshold ? 'Restock soon' : 'In stock'}</span></td><td><div style={{ display: 'flex', gap: 6 }}><input aria-label={'Restock quantity for ' + p.name} style={{ width: 70, padding: 7, border: '1px solid #dfe6dd', borderRadius: 7 }} type="number" min="1" step="1" value={restockValues[p.id] ?? ''} onChange={e => setRestockValues(v => ({ ...v, [p.id]: e.target.value }))}/><button className="live-secondary" disabled={busy} onClick={() => void restock(p)}>Add</button></div></td></tr>)}
+            {!products.length && <tr><td colSpan={6}>No products yet.</td></tr>}
+          </tbody></table></div>
+        </div>}
+        {tab === 'sales' && <div className="live-panel"><div className="live-table-wrap"><table className="live-table"><thead><tr><th>DATE & TIME</th><th>SALE ID</th><th>RECORDED REVENUE</th><th>STATUS</th></tr></thead><tbody>
+          {sales.map(s => <tr key={s.id}><td>{new Date(s.created_at).toLocaleString('en-NG')}</td><td>{s.id.slice(0, 8).toUpperCase()}</td><td><strong>{money(Number(s.total_kobo))}</strong></td><td><span className="live-tag">Completed</span></td></tr>)}
+          {!sales.length && <tr><td colSpan={4} className="live-empty">No sales recorded yet. Use Sabi assistant to prepare your first sale.</td></tr>}
+        </tbody></table></div></div>}
+      </div>
+      <footer className="live-footer"><span>© 2026 SabiShop · Built for everyday retail</span><span>Sales commit atomically · Currency stored as integer kobo</span></footer>
+    </main>
+    {notice && <div style={{ position: 'fixed', bottom: 20, right: 20, maxWidth: 420, background: '#173e2b', color: '#fff', padding: '13px 17px', borderRadius: 12, fontSize: 12, boxShadow: '0 12px 35px #17231d30', zIndex: 10 }}><span>{notice}</span><button onClick={() => setNotice('')} style={{ marginLeft: 12, background: 'transparent', border: 0, color: '#fff' }}>×</button></div>}
+  </div>
 }
-
-function Metric({ icon, label, value, detail, warn = false }: { icon: ReactNode; label: string; value: string; detail: string; warn?: boolean }) {
-  return <div className="metric-card"><div className={'metric-icon ' + (warn ? 'metric-warn' : '')}>{icon}</div><span className="metric-label">{label}</span><strong className="metric-value">{value}</strong><span className="metric-detail">{detail}</span></div>
-}
-
-export default App
