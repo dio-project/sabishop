@@ -22,17 +22,17 @@ This branch contains the first interactive frontend demo. It is intentionally br
 
 Requires Node.js compatible with the installed Vite version (Node 20.19+ or 22.12+ recommended).
 
-\`\`\`bash
+```bash
 npm install
 npm run dev
-\`\`\`
+```
 
 Open the URL printed by Vite. To run a production build:
 
-\`\`\`bash
+```bash
 npm run build
 npm run preview
-\`\`\`
+```
 
 ## Next implementation milestones
 
@@ -50,8 +50,8 @@ npm run preview
 - Gross profit is revenue minus recorded cost of goods sold. It is not net profit and excludes operating expenses.
 - Reservations reduce available-to-promise quantity but are not sales and do not collect payment.
 - Never report a transaction as successful until the database commit succeeds.
-- Never put a Supabase service-role key or an AI provider key in a \`VITE_*\` variable.
+- Never put a Supabase service-role key or an AI provider key in a `VITE_*` variable.
 
 ## Environment
 
-Copy \`.env.example\` to \`.env.local\` if using Supabase in a later step. Only public project URL and anon key belong in frontend variables; secure keys belong in server-side secrets.
+Copy `.env.example` to `.env.local` if using Supabase in a later step. Only public project URL and anon key belong in frontend variables; secure keys belong in server-side secrets.
