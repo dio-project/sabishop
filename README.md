@@ -1,58 +1,63 @@
 # SabiShop
 
-**Your shop, in control.** SabiShop is an AI-assisted workflow for neighbourhood retailers to record sales in everyday language, understand stock, answer customer availability questions, and reserve items for collection.
+**Your shop, in control.** SabiShop is an AI-assisted shop ledger for neighbourhood retailers. The live workspace supports sign-in, inventory, restocking, stock checks, and confirmed sales backed by Supabase.
 
-## Current status
+## Live backend status
 
-This branch contains the first interactive frontend demo. It is intentionally branded as SabiShop with a familiar chat interaction; it is not the official WhatsApp application.
+- Supabase project: \`qatkotmliqxrzoltkmfu\` (London region)
+- PostgreSQL schema with row-level security on all application tables
+- Owner-shop bootstrap RPC
+- Atomic, idempotent sale RPC that checks stock, snapshots price/cost, updates inventory, and writes stock-movement audit rows
+- Atomic stock adjustment/restock RPC with audit records
+- Authenticated Gemini intent-interpreter Edge Function (\`interpret-command\`)
+- Browser UI connected to Supabase Auth, products, sales, sale confirmation, and restocking
 
-- Responsive retailer/customer demo views
-- Seeded Nigerian provision-store catalogue and Naira pricing
-- Natural-language sale parsing with a review/confirmation step
-- Inventory and gross-profit snapshot updated after confirming a sale
-- Threshold-based low-stock alerts
-- Customer stock lookup, reservations, and reservation cancellation
-- Browser-local persistence for demo data
-- Voice typing where the browser supports the Web Speech API
-- Initial Supabase schema/RLS, owner-shop bootstrap migration, and atomic idempotent sale-recording RPC
-- Server-side Gemini intent-interpreter Edge Function and typed client wrapper (not yet wired into the demo UI)
-
-**Important:** this first demo uses deterministic client-side parsing and browser storage. It is not yet connected to a live LLM or Supabase database. Do not use it as a production ledger.
+The first login creates a private shop and loads a clearly labelled sample catalogue if the shop has no products. Replace sample quantities and prices with verified real inventory before using it as an operational ledger.
 
 ## Run locally
 
-Requires Node.js compatible with the installed Vite version (Node 20.19+ or 22.12+ recommended).
+Requires Node.js 22.12+ recommended.
 
-```bash
+\`\`\`bash
 npm install
 npm run dev
-```
+\`\`\`
 
-Open the URL printed by Vite. To run a production build:
+The frontend has safe public project URL/publishable-key defaults for this SabiShop project. You can override them using \`.env.local\`:
 
-```bash
+\`\`\`bash
+VITE_SUPABASE_URL=https://qatkotmliqxrzoltkmfu.supabase.co
+VITE_SUPABASE_ANON_KEY=sb_publishable_4sT0dfXoMHYiKKnlyufsIQ_gm5g22K_
+\`\`\`
+
+Only a Supabase publishable/legacy anon key belongs in the browser. Never expose a Supabase secret/service-role key or an AI provider key in \`VITE_*\` variables or GitHub.
+
+## Enable live AI interpretation
+
+The Edge Function is deployed with JWT verification enabled. Add a Gemini API key as a **server-side Edge Function secret** named \`GEMINI_API_KEY\` in the Supabase Dashboard:
+
+1. Open [SabiShop Edge Function secrets](https://supabase.com/dashboard/project/qatkotmliqxrzoltkmfu/functions/secrets).
+2. Add \`GEMINI_API_KEY\` with a valid Google AI Studio/Gemini API key.
+3. Save the secret, then retry a command in the app.
+
+Do not commit the key or paste it into frontend environment variables. Until the secret is configured, the UI can use limited exact-product-name fallback for a few commands; full natural-language interpretation requires the Gemini key.
+
+## Product rules and current scope
+
+- AI interprets a request; it never directly changes inventory.
+- Sale confirmation runs through a trusted atomic database function. The app reports success only after the database returns a committed sale.
+- All money is stored as integer kobo. UI amounts are entered/displayed in naira.
+- Gross profit is revenue minus cost of goods sold and is not net profit. The current summary reports recorded revenue; item-level profit reporting should be added before using financial summaries operationally.
+- Customer reservations are present in the schema but are **not yet wired into the live UI**. No reservation is created or cancelled by the current frontend.
+- Debt/credit-ledger workflows, batch expiry tracking, voice playback, and official WhatsApp Cloud API integration remain future work.
+
+## Build
+
+\`\`\`bash
 npm run build
 npm run preview
-```
+\`\`\`
 
-## Next implementation milestones
+## Database migrations
 
-1. Create a Supabase project, apply the schema and migrations, configure authentication and verify row-level security.
-2. Connect the signed-in UI to Supabase and wire the server-side AI intent endpoint into the confirmation flow.
-3. Route sale confirmation through the atomic RPC and add integration tests for stock races, retries and audit records.
-4. Add persisted customer reservations with atomic availability checks and expiry/release policy.
-5. Add browser audio recording and accessible spoken responses, with typed fallback.
-6. Deploy a stable demo, then integrate official WhatsApp Business Cloud API through a separate transport adapter.
-
-## Product rules
-
-- AI proposes an interpretation; the user confirms; trusted application code performs the transaction.
-- Stock and money calculations must be deterministic and server-authoritative in production.
-- Gross profit is revenue minus recorded cost of goods sold. It is not net profit and excludes operating expenses.
-- Reservations reduce available-to-promise quantity but are not sales and do not collect payment.
-- Never report a transaction as successful until the database commit succeeds.
-- Never put a Supabase service-role key or an AI provider key in a `VITE_*` variable.
-
-## Environment
-
-Copy `.env.example` to `.env.local` if using Supabase in a later step. Only public project URL and anon key belong in frontend variables; secure keys belong in server-side secrets.
+The project schema is in \`supabase/schema.sql\`, followed by migrations in \`supabase/migrations/\`. These are applied to the linked Supabase project. Do not run \`schema.sql\` again on the already-initialized project; use ordered migrations for further changes.
