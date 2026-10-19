@@ -14,7 +14,8 @@ This branch contains the first interactive frontend demo. It is intentionally br
 - Customer stock lookup, reservations, and reservation cancellation
 - Browser-local persistence for demo data
 - Voice typing where the browser supports the Web Speech API
-- Supabase client dependency and environment template included for the next integration phase
+- Initial Supabase schema/RLS, owner-shop bootstrap migration, and atomic idempotent sale-recording RPC
+- Server-side Gemini intent-interpreter Edge Function and typed client wrapper (not yet wired into the demo UI)
 
 **Important:** this first demo uses deterministic client-side parsing and browser storage. It is not yet connected to a live LLM or Supabase database. Do not use it as a production ledger.
 
@@ -36,11 +37,11 @@ npm run preview
 
 ## Next implementation milestones
 
-1. Supabase schema, authentication, shop membership and row-level security.
-2. Server-side AI intent extraction with schema validation; never expose provider API keys in the browser.
-3. Atomic sale/stock updates, idempotency keys, stock-movement audit trail and server-calculated totals.
-4. Persisted customer reservations with atomic availability checks and expiry/release policy.
-5. Browser audio recording/transcription fallback and accessible spoken responses.
+1. Create a Supabase project, apply the schema and migrations, configure authentication and verify row-level security.
+2. Connect the signed-in UI to Supabase and wire the server-side AI intent endpoint into the confirmation flow.
+3. Route sale confirmation through the atomic RPC and add integration tests for stock races, retries and audit records.
+4. Add persisted customer reservations with atomic availability checks and expiry/release policy.
+5. Add browser audio recording and accessible spoken responses, with typed fallback.
 6. Deploy a stable demo, then integrate official WhatsApp Business Cloud API through a separate transport adapter.
 
 ## Product rules
