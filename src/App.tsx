@@ -70,7 +70,7 @@ export default function App() {
 
   useEffect(() => {
     const container = messagesEndRef.current
-    if (container) container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' })
+    if (container) container.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [messages, busy, tab, shopId])
 
   useEffect(() => {
