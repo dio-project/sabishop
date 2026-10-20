@@ -553,7 +553,7 @@ function RetailerApp() {
     }
   }
 
-  if (!authReady) return <div className="live-auth-wrap"><div className="live-panel live-auth">Loading SabiShop…</div></div>
+  if (!authReady) return <div className="live-auth-wrap" data-theme={theme}><div className="live-panel live-auth">Loading SabiShop…</div></div>
   if (!supabase) return <div className="live-auth-wrap"><div className="live-panel live-auth"><h1>SabiShop needs configuration</h1><p>Supabase client configuration is missing. Set the public project URL and publishable key.</p></div></div>
   if (!session) return <div className="live-auth-wrap"><section className="live-panel live-auth">
     <div className="live-auth-brand-row"><div className="live-brand"><div className="live-brand-mark">S</div><div><strong>sabi<span>shop</span></strong><small>YOUR SHOP, IN CONTROL</small></div></div><button className="live-theme-toggle" type="button" onClick={() => setTheme(current => current === "light" ? "dark" : "light")} aria-label={theme === "light" ? "Enable dark mode" : "Enable light mode"}>{theme === "light" ? <Moon size={17}/> : <Sun size={17}/>}<span>{theme === "light" ? "Dark" : "Light"}</span></button></div>
