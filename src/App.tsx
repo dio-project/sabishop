@@ -244,7 +244,7 @@ export default function App() {
         console.error('AI interpreter returned an invalid response', data)
         throw new Error('AI interpreter returned no valid intent. No transaction was recorded.')
       }
-      const interpreted = data
+      const interpreted = data as { intent: string; items: { product_name: string; quantity: number }[]; confidence: number; needs_confirmation: boolean; clarifying_question: string }
 
       if (interpreted.intent === 'record_sale') {
         const lines: SaleLine[] = []
