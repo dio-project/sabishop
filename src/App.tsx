@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
 import './live.css'
@@ -31,6 +31,9 @@ const sampleProducts = [
 ]
 const money = (kobo: number) => new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 2 }).format(kobo / 100)
 const uid = () => crypto.randomUUID()
+function looksLikePidgin(text: string) {
+  return /\b(abeg|wettin|wetin|dey|don|una|na|sef|make i|how far|no wahala|e be like)\b/i.test(text)
+}
 const greeting: ChatMessage[] = [{ id: 'welcome', role: 'assistant', text: 'Good afternoon. I’m Sabi, your shop assistant. Tell me what sold, ask about stock, or request a summary. I’ll check the details and ask before recording a sale.' }]
 
 export default function App() {
@@ -53,6 +56,7 @@ export default function App() {
   const [authError, setAuthError] = useState('')
   const [productForm, setProductForm] = useState({ name: '', category: 'General', price: '', cost: '', stock: '', threshold: '5' })
   const [restockValues, setRestockValues] = useState<Record<string, string>>({})
+  const messagesEndRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     if (!supabase) { setAuthReady(true); return }
@@ -63,6 +67,11 @@ export default function App() {
     const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession))
     return () => data.subscription.unsubscribe()
   }, [])
+
+  useEffect(() => {
+    const container = messagesEndRef.current
+    if (container) container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' })
+  }, [messages, busy, tab, shopId])
 
   useEffect(() => {
     if (!session || !supabase) {
@@ -210,21 +219,28 @@ export default function App() {
     addMessage({ role: 'user', text })
     setBusy(true)
     try {
-      const lowerText = text.toLowerCase()
-      if (/(\bowe\b|\bowes\b|\bdebt\b|\bcredit\b|\bborrowed\b|\bloan\b|still dey owe|dey owe me|customer owe)/i.test(lowerText)) {
-        addMessage({ role: 'assistant', text: 'Debt tracking is not enabled in this demo yet. I have not changed any records. You can use Inventory, sales recording, stock checks, and restock alerts.' })
-        return
-      }
-      if (/(you don chop|you don chop food|have you eaten|did you eat)/i.test(lowerText)) {
-        addMessage({ role: 'assistant', text: 'I do not eat, but I am ready to help with your shop. You can ask about stock, sales, or restocking.' })
-        return
-      }
-      if (/(expand my market|grow my business|business growth|marketing advice)/i.test(lowerText)) {
-        addMessage({ role: 'assistant', text: 'Business-growth advice is not connected to your shop records yet. In this demo I can report sales, check stock, and identify products at or below their restock thresholds.' })
+      const previousUserMessage = [...messages].reverse().find(message => message.role === 'user')
+      const pendingDraftMessage = [...messages].reverse().find(message => Boolean(message.draft))
+      const isCancelRequest = /^(cancel|cancel am|cancel that|abeg cancel|abeg cancel am|no|no cancel|forget am|forget that)$/i.test(text)
+      if (isCancelRequest && pendingDraftMessage?.draft) {
+        const pidgin = looksLikePidgin(text) || Boolean(previousUserMessage && looksLikePidgin(previousUserMessage.text))
+        const cancelledText = pidgin
+          ? 'I don cancel that sale draft. Stock no change, and I never record the sale.'
+          : 'Sale draft cancelled. Stock was not changed and no sale was recorded.'
+        setMessages(prev => prev.map(message => message.id === pendingDraftMessage.id
+          ? { ...message, draft: undefined, text: cancelledText }
+          : message))
+        void supabase.from('chat_messages').update({ text: cancelledText, draft: null })
+          .eq('id', pendingDraftMessage.id).eq('user_id', session.user.id)
+        addMessage({ role: 'assistant', text: cancelledText })
         return
       }
       const { data, error } = await supabase.functions.invoke('interpret-command', {
-        body: { text, product_names: products.map(p => p.name) },
+        body: {
+          text,
+          product_names: products.map(p => p.name),
+          conversation: messages.slice(-8).map(message => ({ role: message.role, text: message.text })),
+        },
       })
       if (error) {
         console.error('AI interpreter request failed', error)
@@ -244,18 +260,29 @@ export default function App() {
         console.error('AI interpreter returned an invalid response', data)
         throw new Error('AI interpreter returned no valid intent. No transaction was recorded.')
       }
-      const interpreted = data as { intent: string; items: { product_name: string; quantity: number }[]; confidence: number; needs_confirmation: boolean; clarifying_question: string }
+      const interpreted = data as {
+        intent: string
+        items: { product_name: string; quantity: number }[]
+        confidence: number
+        needs_confirmation: boolean
+        clarifying_question: string
+        response_language: 'english' | 'pidgin'
+        valuation_basis: 'cost' | 'retail' | 'both' | 'none'
+      }
+      const pidgin = interpreted.response_language === 'pidgin'
 
       if (interpreted.intent === 'record_sale') {
         const lines: SaleLine[] = []
         for (const item of interpreted.items) {
           const product = resolveProduct(item.product_name)
           if (!product) {
-            addMessage({ role: 'assistant', text: 'I could not match “' + item.product_name + '” to a product in your catalogue. No stock was changed. Check Inventory or use the exact product name.' })
+            addMessage({ role: 'assistant', text: pidgin
+              ? 'I no fit match “' + item.product_name + '” with any product for your catalogue. I never change stock. Check Inventory or use the exact product name.'
+              : 'I could not match “' + item.product_name + '” to a product in your catalogue. No stock was changed. Check Inventory or use the exact product name.' })
             return
           }
           if (!Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 100000) {
-            addMessage({ role: 'assistant', text: 'That quantity does not look valid. Nothing was recorded.' })
+            addMessage({ role: 'assistant', text: pidgin ? 'That quantity no look correct. I never record anything.' : 'That quantity does not look valid. Nothing was recorded.' })
             return
           }
           const existing = lines.find(line => line.product_id === product.id)
@@ -263,7 +290,7 @@ export default function App() {
           else lines.push({ product_id: product.id, name: product.name, quantity: item.quantity, unit_price_kobo: Number(product.selling_price_kobo), unit_cost_kobo: Number(product.unit_cost_kobo) })
         }
         if (!lines.length) {
-          addMessage({ role: 'assistant', text: interpreted.clarifying_question || 'Which product and quantity did you sell? No changes have been made.' })
+          addMessage({ role: 'assistant', text: interpreted.clarifying_question || (pidgin ? 'Which product you sell, and how many? I never change anything.' : 'Which product and quantity did you sell? No changes have been made.') })
           return
         }
         const shortage = lines.find(line => {
@@ -271,43 +298,76 @@ export default function App() {
           return !product || product.stock_quantity < line.quantity
         })
         if (shortage) {
-          addMessage({ role: 'assistant', text: 'I cannot prepare this sale: there are not enough units of ' + shortage.name + ' in recorded stock. Nothing has been recorded.' })
+          addMessage({ role: 'assistant', text: pidgin
+            ? 'I no fit prepare this sale: ' + shortage.name + ' no reach for recorded stock. I never record anything.'
+            : 'I cannot prepare this sale: there are not enough units of ' + shortage.name + ' in recorded stock. Nothing has been recorded.' })
           return
         }
         const draft: SaleDraft = { items: lines, total_kobo: lines.reduce((sum, line) => sum + line.quantity * line.unit_price_kobo, 0), idempotency_key: uid() }
-        addMessage({ role: 'assistant', text: 'Please review the sale below. Stock will only change after you confirm.', draft })
+        addMessage({ role: 'assistant', text: pidgin
+          ? 'Abeg check this sale. Stock go change only after you confirm am.'
+          : 'Please review the sale below. Stock will only change after you confirm.', draft })
+        return
+      }
+      if (interpreted.intent === 'shop_catalogue') {
+        addMessage({ role: 'assistant', text: products.length
+          ? (pidgin ? 'Na wetin dey your recorded shop be this:\n' : 'Here is your recorded catalogue:\n') + products.map(p => '• ' + p.name + ': ' + p.stock_quantity + (pidgin ? ' dey stock at ' : ' units at ') + money(Number(p.selling_price_kobo)) + ' each').join('\n')
+          : (pidgin ? 'No active product dey your catalogue yet. Add products for Inventory first.' : 'There are no active products in your catalogue yet. Add products in Inventory first.') })
+        return
+      }
+      if (interpreted.intent === 'inventory_valuation') {
+        const costValue = products.reduce((sum, product) => sum + Number(product.stock_quantity) * Number(product.unit_cost_kobo), 0)
+        const retailValue = products.reduce((sum, product) => sum + Number(product.stock_quantity) * Number(product.selling_price_kobo), 0)
+        const basis = interpreted.valuation_basis
+        const reply = pidgin
+          ? basis === 'cost'
+            ? 'Your total capital wey dey inside current stock na ' + money(costValue) + '. Na the recorded cost value of stock wey remain; e no include other business expenses.'
+            : basis === 'retail'
+              ? 'If you sell all the stock wey remain at current prices, total sales value go be ' + money(retailValue) + '.'
+              : 'The cost value of all stock wey remain na ' + money(costValue) + '. If you sell all of am at current prices, the total sales value go be ' + money(retailValue) + '.'
+          : basis === 'cost'
+            ? 'The recorded cost value of your current stock is ' + money(costValue) + '. This represents the inventory investment at recorded unit costs, not all business capital or expenses.'
+            : basis === 'retail'
+              ? 'If you sell all remaining stock at current prices, its total retail value is ' + money(retailValue) + '.'
+              : 'The recorded cost value of all remaining stock is ' + money(costValue) + '. At current selling prices, its total retail value is ' + money(retailValue) + '.'
+        addMessage({ role: 'assistant', text: reply })
         return
       }
       if (interpreted.intent === 'check_stock') {
         const selected = interpreted.items.map(item => resolveProduct(item.product_name)).filter((p): p is Product => Boolean(p))
         if (!selected.length) {
-          const asksForCatalogue = /(wettin dey shop|what do you have|what is in the shop|what is in shop|show me all items|show all items|show me products|show products|list products|list stock|wetin una get|wetin dey available|which products)/i.test(text)
-          if (asksForCatalogue) {
-            addMessage({ role: 'assistant', text: products.length
-              ? 'Here is your recorded catalogue:\n' + products.map(p => '• ' + p.name + ': ' + p.stock_quantity + ' units at ' + money(Number(p.selling_price_kobo)) + ' each').join('\n')
-              : 'There are no active products in your catalogue yet. Add products in Inventory first.' })
-          } else {
-            addMessage({ role: 'assistant', text: 'Which item should I check? Current catalogue: ' + products.map(p => p.name).join(', ') + '.' })
-          }
+          addMessage({ role: 'assistant', text: interpreted.clarifying_question || (pidgin
+            ? 'Which item you want make I check? Products wey dey catalogue be: ' + products.map(p => p.name).join(', ') + '.'
+            : 'Which item should I check? Current catalogue: ' + products.map(p => p.name).join(', ') + '.') })
         } else {
-          addMessage({ role: 'assistant', text: selected.map(p => p.name + ': ' + p.stock_quantity + ' units recorded, ' + money(Number(p.selling_price_kobo)) + ' each' + (p.stock_quantity <= p.low_stock_threshold ? ' — at or below the restock threshold.' : '.')).join('\n') })
+          addMessage({ role: 'assistant', text: selected.map(p => pidgin
+            ? p.name + ': ' + p.stock_quantity + ' dey stock, ' + money(Number(p.selling_price_kobo)) + ' each' + (p.stock_quantity <= p.low_stock_threshold ? ' — e don reach restock level.' : '.')
+            : p.name + ': ' + p.stock_quantity + ' units recorded, ' + money(Number(p.selling_price_kobo)) + ' each' + (p.stock_quantity <= p.low_stock_threshold ? ' — at or below the restock threshold.' : '.')).join('\n') })
         }
         return
       }
       if (interpreted.intent === 'business_summary') {
         const sum = todaySales.reduce((n, sale) => n + Number(sale.total_kobo), 0)
-        addMessage({ role: 'assistant', text: 'Recorded sales for today: ' + money(sum) + '\nCompleted transactions: ' + todaySales.length + '\n\nGross profit requires the recorded item-level cost snapshots. This summary currently reports revenue only; it is not net profit.' })
+        addMessage({ role: 'assistant', text: pidgin
+          ? 'Sales wey system record today na ' + money(sum) + '.\nCompleted transactions: ' + todaySales.length + '.\n\nThis na revenue only, no be net profit. We need item-level cost records to calculate gross profit.'
+          : 'Recorded sales for today: ' + money(sum) + '\nCompleted transactions: ' + todaySales.length + '\n\nGross profit requires the recorded item-level cost snapshots. This summary currently reports revenue only; it is not net profit.' })
         return
       }
       if (interpreted.intent === 'restock_advice') {
-        addMessage({ role: 'assistant', text: lowStock.length ? 'Items at or below their configured threshold:\n' + lowStock.map(p => '• ' + p.name + ': ' + p.stock_quantity + ' left (threshold ' + p.low_stock_threshold + ')').join('\n') + '\n\nThese are threshold alerts, not a demand forecast.' : 'No active products are at or below their configured stock thresholds.' })
+        addMessage({ role: 'assistant', text: lowStock.length
+          ? (pidgin ? 'Products wey reach or pass their restock level be these:\n' : 'Items at or below their configured threshold:\n') + lowStock.map(p => '• ' + p.name + ': ' + p.stock_quantity + (pidgin ? ' remain (level ' : ' left (threshold ') + p.low_stock_threshold + ')').join('\n') + (pidgin ? '\n\nNa stock-threshold alert, no be demand forecast.' : '\n\nThese are threshold alerts, not a demand forecast.')
+          : (pidgin ? 'No active product don reach their restock level.' : 'No active products are at or below their configured stock thresholds.') })
         return
       }
       if (interpreted.intent === 'cancel_reservation' || interpreted.intent === 'reserve_item') {
-        addMessage({ role: 'assistant', text: 'Customer reservations are not yet enabled in this live workspace. I have not created or cancelled a reservation.' })
+        addMessage({ role: 'assistant', text: pidgin
+          ? 'Customer reservation never ready for this demo yet. I no create or cancel any reservation.'
+          : 'Customer reservations are not yet enabled in this live workspace. I have not created or cancelled a reservation.' })
         return
       }
-      addMessage({ role: 'assistant', text: interpreted.clarifying_question || 'I’m not sure what you want me to do. Try a stock check, a restock review, or a sale with exact product names.' })
+      addMessage({ role: 'assistant', text: interpreted.clarifying_question || (pidgin
+        ? 'I no too understand wetin you want. You fit ask about stock, restock, today sales, total stock value, or tell me wetin you sell.'
+        : 'I’m not sure what you want me to do. Try a stock check, a restock review, today’s sales, total stock value, or a sale with exact product names.') })
     } catch (error) {
       addMessage({ role: 'assistant', text: error instanceof Error ? error.message : 'I could not process that request. No transaction was recorded.' })
     } finally {
@@ -435,10 +495,11 @@ export default function App() {
               {messages.map(message => <div key={message.id} className={'live-msg ' + (message.role === 'user' ? 'user' : '')}>{message.text}{message.draft && <div className="live-draft">
                 {message.draft.items.map(line => <div className="live-draft-row" key={line.product_id}><span>{line.quantity} × {line.name} · {money(line.unit_price_kobo)} each</span><strong>{money(line.quantity * line.unit_price_kobo)}</strong></div>)}
                 <div className="live-draft-total"><span>Total sale value</span><span>{money(message.draft.total_kobo)}</span></div>
-                <p className="live-muted">Stock is updated only after database confirmation.</p>
+                <p className="live-muted">{looksLikePidgin(message.text) ? 'Stock go change only after database confirmation.' : 'Stock is updated only after database confirmation.'}</p>
                 <button className="live-primary" disabled={busy} onClick={() => void confirmSale(message.draft!)}>{busy ? 'Saving…' : 'Confirm and record sale'}</button>
               </div>}<small className="live-msg-meta"><span>{message.role === 'user' ? 'YOU' : 'SABI'}</span><time dateTime={message.created_at ?? new Date().toISOString()}>{new Intl.DateTimeFormat('en-NG', { hour: '2-digit', minute: '2-digit', hour12: true }).format(new Date(message.created_at ?? Date.now()))}</time></small></div>)}
-              {busy && <div className="live-msg">Working…<small>SABI</small></div>}
+              {busy && <div className="live-msg">{looksLikePidgin(messages.filter(message => message.role === 'user').at(-1)?.text ?? '') ? 'I dey work…' : 'Working…'}<small>SABI</small></div>}
+              <div ref={messagesEndRef} aria-hidden="true" />
             </div>
             <div className="live-composer"><form onSubmit={e => { e.preventDefault(); void sendCommand() }}><input value={input} onChange={e => setInput(e.target.value)} placeholder="e.g. I sold 3 Indomie / Abeg, how many remain?" aria-label="Message Sabi" /><button className="live-primary" disabled={busy || !input.trim()}>Send</button></form>
               <div className="live-hints"><button onClick={() => void sendCommand('I sold 3 Indomie Chicken and 2 Milo Sachet')}>Record a sale</button><button onClick={() => void sendCommand('What should I restock?')}>Restock advice</button><button onClick={() => void sendCommand('Do you have Peak Milk Sachet?')}>Check stock</button><button onClick={() => void sendCommand('Abeg, how many Indomie Chicken remain?')}>Try Pidgin</button><button onClick={() => void sendCommand('How much did I sell today?')}>Today’s sales</button></div>
