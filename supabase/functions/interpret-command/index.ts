@@ -97,7 +97,16 @@ async function requestGemini(apiKey: string, prompt: string): Promise<string> {
 }
 
 Deno.serve(async (request: Request) => {
-  if (request.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
+  if (request.method === 'OPTIONS') {
+    const requestedHeaders = request.headers.get('Access-Control-Request-Headers')
+    const preflightHeaders = {
+      ...corsHeaders,
+      ...(requestedHeaders ? { 'Access-Control-Allow-Headers': requestedHeaders } : {}),
+      'Access-Control-Max-Age': '86400',
+    }
+    console.info('CORS preflight', JSON.stringify({ origin: request.headers.get('Origin'), requestedHeaders }))
+    return new Response('ok', { headers: preflightHeaders })
+  }
   if (request.method !== 'POST') return jsonResponse({ error: 'Method not allowed' }, 405)
 
   const authorization = request.headers.get('Authorization')
@@ -186,6 +195,7 @@ Deno.serve(async (request: Request) => {
   )
   if (items.length !== intent.items.length) return jsonResponse({ error: 'AI returned an invalid item quantity' }, 502)
 
+  console.info('AI interpretation completed', JSON.stringify({ provider, intent: intent.intent, item_count: items.length }))
   return jsonResponse({
     intent: intent.intent,
     items,
