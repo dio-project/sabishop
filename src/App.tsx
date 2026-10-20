@@ -214,7 +214,7 @@ export default function App() {
 
   async function sendCommand(rawText?: string) {
     const text = (rawText ?? input).trim()
-    if (!text || !supabase || !shopId || busy) return
+    if (!text || !supabase || !session || !shopId || busy) return
     setInput('')
     addMessage({ role: 'user', text })
     setBusy(true)
