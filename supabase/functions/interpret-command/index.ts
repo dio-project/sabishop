@@ -203,13 +203,25 @@ Deno.serve(async (request: Request) => {
   if (!Array.isArray(intent.items) || typeof intent.confidence !== 'number' || typeof intent.needs_confirmation !== 'boolean' || typeof intent.clarifying_question !== 'string' || !['english', 'pidgin'].includes(String(intent.response_language)) || !['cost', 'retail', 'both', 'none'].includes(String(intent.valuation_basis))) {
     return jsonResponse({ error: 'AI output did not pass validation' }, 502)
   }
-  const items = intent.items.filter((item): item is { product_name: string; quantity: number } =>
-    Boolean(item) && typeof item === 'object' &&
-    typeof (item as Record<string, unknown>).product_name === 'string' &&
-    Number.isSafeInteger((item as Record<string, unknown>).quantity) &&
-    Number((item as Record<string, unknown>).quantity) > 0,
-  )
-  if (items.length !== intent.items.length) return jsonResponse({ error: 'AI returned an invalid item quantity' }, 502)
+  // Stock lookups identify products; they do not consume a quantity. Some models
+  // emit 0 or omit quantity for check_stock, so normalize it instead of rejecting
+  // an otherwise valid product lookup. Quantities remain strictly validated for
+  // transactional intents such as record_sale.
+  const items: { product_name: string; quantity: number }[] = []
+  for (const candidate of intent.items) {
+    if (!candidate || typeof candidate !== 'object' || typeof (candidate as Record<string, unknown>).product_name !== 'string') {
+      return jsonResponse({ error: 'AI returned an invalid product item' }, 502)
+    }
+    const item = candidate as Record<string, unknown>
+    if (intent.intent === 'check_stock') {
+      items.push({ product_name: String(item.product_name).slice(0, 160), quantity: 1 })
+      continue
+    }
+    if (!Number.isSafeInteger(item.quantity) || Number(item.quantity) < 1) {
+      return jsonResponse({ error: 'AI returned an invalid item quantity' }, 502)
+    }
+    items.push({ product_name: String(item.product_name).slice(0, 160), quantity: Number(item.quantity) })
+  }
 
   console.info('AI interpretation completed', JSON.stringify({ provider, intent: intent.intent, item_count: items.length }))
   return jsonResponse({
