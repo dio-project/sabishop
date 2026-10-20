@@ -28,7 +28,7 @@ function makePrompt(productNames: string[], userText: string, conversation: Conv
     'Match named products to the supplied catalogue and return the exact canonical product name from the catalogue. If the user clearly names a product, do not omit it. Recognize digits and number words, including Pidgin phrasing such as "two Indomie don go". Do not infer a product when none is named for a product-specific request.',
     'Return ONLY one valid JSON object with keys: intent, items, confidence, needs_confirmation, clarifying_question, response_language, valuation_basis.',
     'intent must be one of the available intents listed above.',
-    'items must be an array of objects with product_name (string) and quantity (positive integer). Use an empty array for shop_catalogue, inventory_valuation, business_summary, restock_advice, and when no product is identified.',
+    'items must be an array of objects with product_name (string) and quantity (positive integer). For check_stock, quantity is not semantically required; if the schema requires it, use 1 as a placeholder. Use an empty array for shop_catalogue, inventory_valuation, business_summary, restock_advice, and when no product is identified.',
     'valuation_basis must be cost, retail, both, or none. Use cost for total capital/investment; both for total stock amount/value unless the user explicitly asks for selling value only (retail). Use none for other intents.',
     'confidence must be a number from 0 to 1. needs_confirmation must be boolean. clarifying_question must be a short string in the same language as the current user message. response_language must be english or pidgin.',
     'For record_sale, needs_confirmation must be true. Never claim a transaction has happened or execute actions; the app will ask the user to confirm before updating stock.',
@@ -203,24 +203,32 @@ Deno.serve(async (request: Request) => {
   if (!Array.isArray(intent.items) || typeof intent.confidence !== 'number' || typeof intent.needs_confirmation !== 'boolean' || typeof intent.clarifying_question !== 'string' || !['english', 'pidgin'].includes(String(intent.response_language)) || !['cost', 'retail', 'both', 'none'].includes(String(intent.valuation_basis))) {
     return jsonResponse({ error: 'AI output did not pass validation' }, 502)
   }
-  // Stock lookups identify products; they do not consume a quantity. Some models
-  // emit 0 or omit quantity for check_stock, so normalize it instead of rejecting
-  // an otherwise valid product lookup. Quantities remain strictly validated for
-  // transactional intents such as record_sale.
+  // Quantities are transaction data only for record_sale. A stock lookup needs a
+  // canonical product name, not a quantity, so normalize that field regardless
+  // of what the model emitted. Non-item intents do not consume model-supplied items.
   const items: { product_name: string; quantity: number }[] = []
-  for (const candidate of intent.items) {
-    if (!candidate || typeof candidate !== 'object' || typeof (candidate as Record<string, unknown>).product_name !== 'string') {
-      return jsonResponse({ error: 'AI returned an invalid product item' }, 502)
+  if (intent.intent === 'record_sale') {
+    for (const candidate of intent.items) {
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+        return jsonResponse({ error: 'AI returned an invalid sale item' }, 502)
+      }
+      const item = candidate as Record<string, unknown>
+      if (typeof item.product_name !== 'string' || !item.product_name.trim()) {
+        return jsonResponse({ error: 'AI did not identify a product for the sale' }, 502)
+      }
+      if (!Number.isSafeInteger(item.quantity) || Number(item.quantity) < 1 || Number(item.quantity) > 100000) {
+        return jsonResponse({ error: 'AI returned an invalid sale quantity' }, 502)
+      }
+      items.push({ product_name: item.product_name.trim().slice(0, 160), quantity: Number(item.quantity) })
     }
-    const item = candidate as Record<string, unknown>
-    if (intent.intent === 'check_stock') {
-      items.push({ product_name: String(item.product_name).slice(0, 160), quantity: 1 })
-      continue
+  } else if (intent.intent === 'check_stock') {
+    for (const candidate of intent.items) {
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue
+      const item = candidate as Record<string, unknown>
+      if (typeof item.product_name === 'string' && item.product_name.trim()) {
+        items.push({ product_name: item.product_name.trim().slice(0, 160), quantity: 1 })
+      }
     }
-    if (!Number.isSafeInteger(item.quantity) || Number(item.quantity) < 1) {
-      return jsonResponse({ error: 'AI returned an invalid item quantity' }, 502)
-    }
-    items.push({ product_name: String(item.product_name).slice(0, 160), quantity: Number(item.quantity) })
   }
 
   console.info('AI interpretation completed', JSON.stringify({ provider, intent: intent.intent, item_count: items.length }))
