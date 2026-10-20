@@ -321,7 +321,18 @@ export default function App() {
         if (!data || typeof data.intent !== 'string' || !Array.isArray(data.items) || !['english', 'pidgin'].includes(data.response_language)) {
           throw new Error('AI interpreter returned an invalid structured result')
         }
-        interpreted = data as InterpretedCommand
+        const candidate = data as InterpretedCommand
+        const localCandidate = fallbackInterpretCommand(text, products)
+        const invalidSale = candidate.intent === 'record_sale' && (!candidate.items.length || candidate.items.some(item =>
+          !item || typeof item.product_name !== 'string' || !item.product_name.trim() ||
+          !Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 100000))
+        const missedStockLookup = candidate.intent === 'check_stock' && !candidate.items.length &&
+          localCandidate.intent === 'check_stock' && localCandidate.items.length > 0
+        const missedSupportedIntent = candidate.intent === 'unknown' && localCandidate.intent !== 'unknown'
+        if (invalidSale || missedStockLookup || missedSupportedIntent || candidate.confidence < 0.25) {
+          throw new Error('AI interpretation was incomplete or too uncertain')
+        }
+        interpreted = candidate
       } catch (aiError) {
         console.warn('AI interpreter unavailable; trying deterministic fallback', aiError)
         interpreted = fallbackInterpretCommand(text, products)
