@@ -83,7 +83,7 @@ export default function App() {
         .select('id, role, text, draft, created_at')
         .eq('shop_id', shopId)
         .eq('user_id', session!.user.id)
-        .order('created_at', { ascending: true })
+        .order('created_at', { ascending: false })
         .limit(200)
       if (cancelled) return
       if (error) {
@@ -91,7 +91,7 @@ export default function App() {
         return
       }
       if (data?.length) {
-        setMessages(data as ChatMessage[])
+        setMessages([...(data as ChatMessage[])].reverse())
       } else {
         const welcome: ChatMessage = { id: uid(), role: 'assistant', text: greeting[0].text, created_at: new Date().toISOString() }
         setMessages([welcome])
