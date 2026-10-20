@@ -43,7 +43,7 @@ async function requestGroq(apiKey: string, prompt: string): Promise<string> {
         { role: 'user', content: prompt },
       ],
       temperature: 0,
-      max_tokens: 512,
+      max_tokens: 1024,
       response_format: { type: 'json_object' },
     }),
     signal: AbortSignal.timeout(8000),
@@ -83,7 +83,7 @@ async function requestGemini(apiKey: string, prompt: string): Promise<string> {
         thinkingConfig: { thinkingLevel: 'low' },
       },
     }),
-    signal: AbortSignal.timeout(6000),
+    signal: AbortSignal.timeout(10000),
   })
   if (!response.ok) {
     const providerBody = await response.text()
@@ -195,7 +195,6 @@ Deno.serve(async (request: Request) => {
   )
   if (items.length !== intent.items.length) return jsonResponse({ error: 'AI returned an invalid item quantity' }, 502)
 
-  console.info('AI interpretation completed', JSON.stringify({ provider, intent: intent.intent, item_count: items.length }))
   console.info('AI interpretation completed', JSON.stringify({ provider, intent: intent.intent, item_count: items.length }))
   return jsonResponse({
     intent: intent.intent,
