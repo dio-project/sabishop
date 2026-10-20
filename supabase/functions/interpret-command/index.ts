@@ -196,6 +196,7 @@ Deno.serve(async (request: Request) => {
   if (items.length !== intent.items.length) return jsonResponse({ error: 'AI returned an invalid item quantity' }, 502)
 
   console.info('AI interpretation completed', JSON.stringify({ provider, intent: intent.intent, item_count: items.length }))
+  console.info('AI interpretation completed', JSON.stringify({ provider, intent: intent.intent, item_count: items.length }))
   return jsonResponse({
     intent: intent.intent,
     items,
