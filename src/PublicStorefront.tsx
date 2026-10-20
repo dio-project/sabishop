@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { Search, Store, MapPin, Phone, ShoppingBag, Clock, X, ArrowLeft } from 'lucide-react'
+import { Search, Store, MapPin, Phone, ShoppingBag, Clock, X } from 'lucide-react'
 import { supabase } from './lib/supabase'
 import './storefront.css'
 type Row = { shop_id:string; shop_name:string; owner_name:string; phone:string; address:string; city:string; shop_category:string; description:string; product_id:string; product_name:string; product_category:string; selling_price_kobo:number; available_quantity:number }
