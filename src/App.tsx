@@ -230,7 +230,7 @@ export default function App() {
     setBusy(true)
     try {
       const lowerText = text.toLowerCase()
-      if (/(\\bowe\\b|\\bowes\\b|\\bdebt\\b|\\bcredit\\b|\\bborrowed\\b|\\bloan\\b|still dey owe|dey owe me|customer owe)/i.test(lowerText)) {
+      if (/(\bowe\b|\bowes\b|\bdebt\b|\bcredit\b|\bborrowed\b|\bloan\b|still dey owe|dey owe me|customer owe)/i.test(lowerText)) {
         addMessage({ role: 'assistant', text: 'Debt tracking is not enabled in this demo yet. I have not changed any records. You can use Inventory, sales recording, stock checks, and restock alerts.' })
         return
       }
@@ -255,6 +255,10 @@ export default function App() {
         addMessage({ role: 'assistant', text: 'AI interpretation is unavailable, so I used limited exact-name matching. Please review the result carefully.' })
       } else {
         interpreted = data
+        if (Array.isArray(interpreted.items) && interpreted.items.length === 0 && (interpreted.intent === 'check_stock' || interpreted.intent === 'record_sale')) {
+          const deterministic = fallbackInterpretation(text)
+          if (deterministic.items.length > 0 && deterministic.intent === interpreted.intent) interpreted = { ...interpreted, items: deterministic.items }
+        }
       }
 
       if (interpreted.intent === 'record_sale') {
