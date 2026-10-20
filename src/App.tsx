@@ -17,7 +17,7 @@ type Product = {
 }
 type SaleLine = { product_id: string; name: string; quantity: number; unit_price_kobo: number; unit_cost_kobo: number }
 type SaleDraft = { items: SaleLine[]; total_kobo: number; idempotency_key: string }
-type ChatMessage = { id: string; role: 'assistant' | 'user'; text: string; draft?: SaleDraft }
+type ChatMessage = { id: string; role: 'assistant' | 'user'; text: string; draft?: SaleDraft; created_at?: string }
 type Sale = { id: string; total_kobo: number; created_at: string }
 type Tab = 'assistant' | 'inventory' | 'sales'
 
@@ -69,10 +69,42 @@ export default function App() {
       setShopId('')
       setProducts([])
       setSales([])
+      setMessages(greeting)
       return
     }
     void loadWorkspace(session.user.id)
   }, [session?.user.id])
+
+  useEffect(() => {
+    if (!session || !supabase || !shopId) return
+    let cancelled = false
+    async function loadChatHistory() {
+      const { data, error } = await supabase!.from('chat_messages')
+        .select('id, role, text, draft, created_at')
+        .eq('shop_id', shopId)
+        .eq('user_id', session!.user.id)
+        .order('created_at', { ascending: true })
+        .limit(200)
+      if (cancelled) return
+      if (error) {
+        setNotice('Chat history could not be loaded: ' + error.message)
+        return
+      }
+      if (data?.length) {
+        setMessages(data as ChatMessage[])
+      } else {
+        const welcome: ChatMessage = { id: uid(), role: 'assistant', text: greeting[0].text, created_at: new Date().toISOString() }
+        setMessages([welcome])
+        const { error: saveError } = await supabase!.from('chat_messages').insert({
+          id: welcome.id, shop_id: shopId, user_id: session!.user.id,
+          role: welcome.role, text: welcome.text, created_at: welcome.created_at,
+        })
+        if (saveError && !cancelled) setNotice('Chat history could not be saved: ' + saveError.message)
+      }
+    }
+    void loadChatHistory()
+    return () => { cancelled = true }
+  }, [shopId, session?.user.id])
 
   const lowStock = useMemo(() => products.filter(p => p.is_active && p.stock_quantity <= p.low_stock_threshold), [products])
   const todaySales = useMemo(() => sales.filter(s => new Date(s.created_at).toDateString() === new Date().toDateString()), [sales])
@@ -152,8 +184,17 @@ export default function App() {
     setTab('assistant')
   }
 
-  function addMessage(message: Omit<ChatMessage, 'id'>) {
-    setMessages(prev => [...prev, { ...message, id: uid() }])
+  function addMessage(message: Omit<ChatMessage, 'id' | 'created_at'>) {
+    const next: ChatMessage = { ...message, id: uid(), created_at: new Date().toISOString() }
+    setMessages(prev => [...prev, next])
+    if (supabase && session && shopId) {
+      void supabase.from('chat_messages').insert({
+        id: next.id, shop_id: shopId, user_id: session.user.id,
+        role: next.role, text: next.text, draft: next.draft ?? null, created_at: next.created_at,
+      }).then(({ error }) => {
+        if (error) setNotice('A chat message could not be saved: ' + error.message)
+      })
+    }
   }
 
   function resolveProduct(name: string): Product | undefined {
@@ -165,14 +206,15 @@ export default function App() {
   function fallbackInterpretation(text: string) {
     const lower = text.toLowerCase()
     if (/(profit|revenue|sales today|how much.*today|business summary|performance)/.test(lower)) return { intent: 'business_summary', items: [], confidence: 0.5, needs_confirmation: false, clarifying_question: '' }
-    if (/(restock|low stock|running low|reorder|buy more)/.test(lower)) return { intent: 'restock_advice', items: [], confidence: 0.5, needs_confirmation: false, clarifying_question: '' }
+    if (/(restock|low stock|running low|reorder|buy more|buy am|need to buy|stock don low)/.test(lower)) return { intent: 'restock_advice', items: [], confidence: 0.5, needs_confirmation: false, clarifying_question: '' }
     const matched = products.filter(p => lower.includes(p.name.toLowerCase()))
-    if (/(stock|available|do you have|how many|in stock)/.test(lower)) return { intent: 'check_stock', items: matched.map(p => ({ product_name: p.name, quantity: 1 })), confidence: matched.length ? 0.7 : 0.3, needs_confirmation: false, clarifying_question: '' }
-    if (/(sold|sale|record|customer bought|just sold)/.test(lower)) {
+    if (/(stock|available|do you have|how many|in stock|remain|remaining|dey for|abeg.*(stock|how many)|how much.*remain)/.test(lower)) return { intent: 'check_stock', items: matched.map(p => ({ product_name: p.name, quantity: 1 })), confidence: matched.length ? 0.7 : 0.3, needs_confirmation: false, clarifying_question: '' }
+    if (/(sold|sell|sale|record|customer bought|just sold|don sell|dem buy|customer buy|i sell)/.test(lower)) {
       const items = matched.map(p => {
         const before = lower.slice(Math.max(0, lower.indexOf(p.name.toLowerCase()) - 18), lower.indexOf(p.name.toLowerCase()))
         const after = lower.slice(lower.indexOf(p.name.toLowerCase()) + p.name.length)
-        const qty = Number(before.match(/(\d+)\s*(?:x\s*)?$/)?.[1] ?? after.match(/^\s*(?:x\s*)?(\d+)/)?.[1] ?? 1)
+        const quantityToken = before.match(/(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:x\s*)?$/)?.[1] ?? after.match(/^\s*(?:x\s*)?(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b/i)?.[1] ?? '1'
+        const qty = ({ one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 } as Record<string, number>)[quantityToken.toLowerCase()] ?? Number(quantityToken)
         return { product_name: p.name, quantity: qty }
       })
       return { intent: items.length ? 'record_sale' : 'unknown', items, confidence: items.length ? 0.6 : 0.2, needs_confirmation: true, clarifying_question: items.length ? '' : 'Which product and quantity did you sell?' }
@@ -277,9 +319,17 @@ export default function App() {
       if (error) throw error
       const result = data as { sale_id?: string; total_kobo?: number; duplicate?: boolean }
       if (!result?.sale_id) throw new Error('The database did not confirm the sale.')
+      const recordedText = 'Sale recorded in Supabase. Total: ' + money(Number(result.total_kobo ?? draft.total_kobo)) + (result.duplicate ? ' (safe retry; no duplicate stock deduction).' : '')
+      const draftMessage = messages.find(m => m.draft?.idempotency_key === draft.idempotency_key)
       setMessages(prev => prev.map(m => m.draft?.idempotency_key === draft.idempotency_key
-        ? { ...m, draft: undefined, text: 'Sale recorded in Supabase. Total: ' + money(Number(result.total_kobo ?? draft.total_kobo)) + (result.duplicate ? ' (safe retry; no duplicate stock deduction).' : '') }
+        ? { ...m, draft: undefined, text: recordedText }
         : m))
+      if (draftMessage && supabase && session) {
+        const { error: chatUpdateError } = await supabase.from('chat_messages')
+          .update({ text: recordedText, draft: null })
+          .eq('id', draftMessage.id).eq('user_id', session.user.id)
+        if (chatUpdateError) setNotice('Sale recorded, but chat history update failed: ' + chatUpdateError.message)
+      }
       addMessage({ role: 'assistant', text: 'Database confirmed the sale. I’m refreshing your stock and sales totals.' })
       await loadWorkspace(session!.user.id)
     } catch (error) {
@@ -378,11 +428,11 @@ export default function App() {
                 <div className="live-draft-total"><span>Total sale value</span><span>{money(message.draft.total_kobo)}</span></div>
                 <p className="live-muted">Stock is updated only after database confirmation.</p>
                 <button className="live-primary" disabled={busy} onClick={() => void confirmSale(message.draft!)}>{busy ? 'Saving…' : 'Confirm and record sale'}</button>
-              </div>}<small>{message.role === 'user' ? 'YOU' : 'SABI'}</small></div>)}
+              </div>}<small className="live-msg-meta"><span>{message.role === 'user' ? 'YOU' : 'SABI'}</span><time dateTime={message.created_at ?? new Date().toISOString()}>{new Intl.DateTimeFormat('en-NG', { hour: '2-digit', minute: '2-digit', hour12: true }).format(new Date(message.created_at ?? Date.now()))}</time></small></div>)}
               {busy && <div className="live-msg">Working…<small>SABI</small></div>}
             </div>
-            <div className="live-composer"><form onSubmit={e => { e.preventDefault(); void sendCommand() }}><input value={input} onChange={e => setInput(e.target.value)} placeholder="e.g. I sold 3 Indomie Chicken…" aria-label="Message Sabi" /><button className="live-primary" disabled={busy || !input.trim()}>Send</button></form>
-              <div className="live-hints"><button onClick={() => void sendCommand('I sold 3 Indomie Chicken and 2 Milo Sachet')}>Record a sale</button><button onClick={() => void sendCommand('What should I restock?')}>Restock advice</button><button onClick={() => void sendCommand('Do you have Peak Milk Sachet?')}>Check stock</button><button onClick={() => void sendCommand('How much did I sell today?')}>Today’s sales</button></div>
+            <div className="live-composer"><form onSubmit={e => { e.preventDefault(); void sendCommand() }}><input value={input} onChange={e => setInput(e.target.value)} placeholder="e.g. I sold 3 Indomie / Abeg, how many remain?" aria-label="Message Sabi" /><button className="live-primary" disabled={busy || !input.trim()}>Send</button></form>
+              <div className="live-hints"><button onClick={() => void sendCommand('I sold 3 Indomie Chicken and 2 Milo Sachet')}>Record a sale</button><button onClick={() => void sendCommand('What should I restock?')}>Restock advice</button><button onClick={() => void sendCommand('Do you have Peak Milk Sachet?')}>Check stock</button><button onClick={() => void sendCommand('Abeg, how many Indomie Chicken remain?')}>Try Pidgin</button><button onClick={() => void sendCommand('How much did I sell today?')}>Today’s sales</button></div>
             </div>
           </section>
           <aside className="live-insights">
