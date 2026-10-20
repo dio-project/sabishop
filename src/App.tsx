@@ -57,7 +57,9 @@ function fallbackInterpretCommand(text: string, products: Product[]): Interprete
     return phrase ? { product, phrase, exact: normalized.includes(name) } : null
   }).filter((entry): entry is { product: Product; phrase: string; exact: boolean } => Boolean(entry))
     .sort((a, b) => Number(b.exact) - Number(a.exact) || b.phrase.length - a.phrase.length)
-  const mentioned = mentions.filter((entry, index, all) => all.findIndex(other => other.product.id === entry.product.id) === index)
+  const exactMentions = mentions.filter(entry => entry.exact)
+  const mentionCandidates = exactMentions.length ? exactMentions : mentions.filter(entry => !['sachet', '500g', '75cl', 'cl', 'gram', 'grams'].includes(entry.phrase))
+  const mentioned = mentionCandidates.filter((entry, index, all) => all.findIndex(other => other.product.id === entry.product.id) === index)
   const makeResult = (intent: string, items: { product_name: string; quantity: number }[] = [], valuation_basis: InterpretedCommand['valuation_basis'] = 'none', clarifying_question = ''): InterpretedCommand => ({
     intent, items, confidence: 0.72, needs_confirmation: intent === 'record_sale',
     clarifying_question, response_language: pidgin ? 'pidgin' : 'english', valuation_basis,
