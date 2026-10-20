@@ -232,10 +232,12 @@ export default function App() {
         const cancelledText = pidgin
           ? 'I don cancel that sale draft. Stock no change, and I never record the sale.'
           : 'Sale draft cancelled. Stock was not changed and no sale was recorded.'
+        // Preserve the original sale-preview text. Cancellation is a separate assistant reply.
+        // Overwriting the preview made the transcript look as if the sale command was cancelled immediately.
         setMessages(prev => prev.map(message => message.id === pendingDraftMessage.id
-          ? { ...message, draft: undefined, text: cancelledText }
+          ? { ...message, draft: undefined }
           : message))
-        const { error: cancelSaveError } = await supabase.from('chat_messages').update({ text: cancelledText, draft: null })
+        const { error: cancelSaveError } = await supabase.from('chat_messages').update({ draft: null })
           .eq('id', pendingDraftMessage.id).eq('user_id', session.user.id)
         if (cancelSaveError) setNotice('The draft was cancelled in this session, but chat history could not be updated: ' + cancelSaveError.message)
         addMessage({ role: 'assistant', text: cancelledText })
