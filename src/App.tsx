@@ -203,25 +203,6 @@ export default function App() {
       ?? products.find(p => normalized.length > 2 && (p.normalized_name.includes(normalized) || normalized.includes(p.normalized_name)))
   }
 
-  function fallbackInterpretation(text: string) {
-    const lower = text.toLowerCase()
-    if (/(profit|revenue|sales today|how much.*today|business summary|performance)/.test(lower)) return { intent: 'business_summary', items: [], confidence: 0.5, needs_confirmation: false, clarifying_question: '' }
-    if (/(restock|low stock|running low|reorder|buy more|buy am|need to buy|stock don low|suppose buy|buy put for shop|wettin.*buy|buy today)/.test(lower)) return { intent: 'restock_advice', items: [], confidence: 0.5, needs_confirmation: false, clarifying_question: '' }
-    const matched = products.filter(p => lower.includes(p.name.toLowerCase()))
-    if (/(stock|available|do you have|how many|in stock|remain|remaining|dey for|abeg.*(stock|how many)|how much.*remain)/.test(lower)) return { intent: 'check_stock', items: matched.map(p => ({ product_name: p.name, quantity: 1 })), confidence: matched.length ? 0.7 : 0.3, needs_confirmation: false, clarifying_question: '' }
-    if (/(sold|sell|sale|record|customer bought|just sold|don sell|dem buy|customer buy|i sell)/.test(lower)) {
-      const items = matched.map(p => {
-        const before = lower.slice(Math.max(0, lower.indexOf(p.name.toLowerCase()) - 18), lower.indexOf(p.name.toLowerCase()))
-        const after = lower.slice(lower.indexOf(p.name.toLowerCase()) + p.name.length)
-        const quantityToken = before.match(/(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:x\s*)?$/)?.[1] ?? after.match(/^\s*(?:x\s*)?(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b/i)?.[1] ?? '1'
-        const qty = ({ one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 } as Record<string, number>)[quantityToken.toLowerCase()] ?? Number(quantityToken)
-        return { product_name: p.name, quantity: qty }
-      })
-      return { intent: items.length ? 'record_sale' : 'unknown', items, confidence: items.length ? 0.6 : 0.2, needs_confirmation: true, clarifying_question: items.length ? '' : 'Which product and quantity did you sell?' }
-    }
-    return { intent: 'unknown', items: [], confidence: 0, needs_confirmation: false, clarifying_question: 'Try “I sold 3 Indomie Chicken”, “What should I restock?” or “Do you have Peak Milk Sachet?”' }
-  }
-
   async function sendCommand(rawText?: string) {
     const text = (rawText ?? input).trim()
     if (!text || !supabase || !shopId || busy) return
@@ -242,24 +223,28 @@ export default function App() {
         addMessage({ role: 'assistant', text: 'Business-growth advice is not connected to your shop records yet. In this demo I can report sales, check stock, and identify products at or below their restock thresholds.' })
         return
       }
-      let interpreted: ReturnType<typeof fallbackInterpretation>
       const { data, error } = await supabase.functions.invoke('interpret-command', {
         body: { text, product_names: products.map(p => p.name) },
       })
-      if (error || !data || typeof data.intent !== 'string') {
-        interpreted = fallbackInterpretation(text)
-        if (interpreted.intent === 'unknown') {
-          addMessage({ role: 'assistant', text: 'The AI interpreter is not configured or is temporarily unavailable. I could not safely resolve that request. You can still use the inventory and sales screens, or try an exact product name with a supported command.' })
-          return
+      if (error) {
+        console.error('AI interpreter request failed', error)
+        let detail = error.message || 'The Edge Function request failed.'
+        try {
+          const context = (error as unknown as { context?: Response }).context
+          if (context instanceof Response) {
+            const body = await context.clone().json() as { error?: string }
+            if (typeof body?.error === 'string' && body.error.trim()) detail = body.error
+          }
+        } catch {
+          // Keep the original invocation error if the response body is not JSON.
         }
-        addMessage({ role: 'assistant', text: 'AI interpretation is unavailable, so I used limited exact-name matching. Please review the result carefully.' })
-      } else {
-        interpreted = data
-        if (Array.isArray(interpreted.items) && interpreted.items.length === 0 && (interpreted.intent === 'check_stock' || interpreted.intent === 'record_sale')) {
-          const deterministic = fallbackInterpretation(text)
-          if (deterministic.items.length > 0 && deterministic.intent === interpreted.intent) interpreted = { ...interpreted, items: deterministic.items }
-        }
+        throw new Error('AI interpreter request failed: ' + detail)
       }
+      if (!data || typeof data.intent !== 'string') {
+        console.error('AI interpreter returned an invalid response', data)
+        throw new Error('AI interpreter returned no valid intent. No transaction was recorded.')
+      }
+      const interpreted = data
 
       if (interpreted.intent === 'record_sale') {
         const lines: SaleLine[] = []
