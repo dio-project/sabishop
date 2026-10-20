@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { Menu, X, Sun, Moon, MessageSquare, Package, History, LogOut } from 'lucide-react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
 import './live.css'
@@ -34,6 +35,62 @@ const uid = () => crypto.randomUUID()
 function looksLikePidgin(text: string) {
   return /\b(abeg|wettin|wetin|dey|don|una|na|sef|make i|how far|no wahala|e be like)\b/i.test(text)
 }
+
+type InterpretedCommand = {
+  intent: string
+  items: { product_name: string; quantity: number }[]
+  confidence: number
+  needs_confirmation: boolean
+  clarifying_question: string
+  response_language: 'english' | 'pidgin'
+  valuation_basis: 'cost' | 'retail' | 'both' | 'none'
+}
+
+function fallbackInterpretCommand(text: string, products: Product[]): InterpretedCommand {
+  const pidgin = looksLikePidgin(text)
+  const normalized = text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
+  const words: Record<string, number> = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, dozen: 12 }
+  const mentions = products.map(product => {
+    const name = product.name.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
+    const tokens = name.split(' ').filter(token => token.length > 2)
+    const phrase = normalized.includes(name) ? name : tokens.find(token => normalized.split(' ').includes(token))
+    return phrase ? { product, phrase, exact: normalized.includes(name) } : null
+  }).filter((entry): entry is { product: Product; phrase: string; exact: boolean } => Boolean(entry))
+    .sort((a, b) => Number(b.exact) - Number(a.exact) || b.phrase.length - a.phrase.length)
+  const mentioned = mentions.filter((entry, index, all) => all.findIndex(other => other.product.id === entry.product.id) === index)
+  const makeResult = (intent: string, items: { product_name: string; quantity: number }[] = [], valuation_basis: InterpretedCommand['valuation_basis'] = 'none', clarifying_question = ''): InterpretedCommand => ({
+    intent, items, confidence: 0.72, needs_confirmation: intent === 'record_sale',
+    clarifying_question, response_language: pidgin ? 'pidgin' : 'english', valuation_basis,
+  })
+  if (/\b(capital|invested|investment|stock value|stock amount|total stock|inventory value)\b/.test(normalized)) {
+    const basis = /\b(retail|selling price|sell all|sales value)\b/.test(normalized) ? 'retail' : /\b(capital|invested|investment)\b/.test(normalized) ? 'cost' : 'both'
+    return makeResult('inventory_valuation', [], basis)
+  }
+  if (/\b(restock|re stock|what should i buy|what to buy|low stock|stock don low|wetin i go buy)\b/.test(normalized)) return makeResult('restock_advice')
+  if (/\b(today|this week|revenue|sales summary|how much did i sell|how much we sell|business summary|sales today)\b/.test(normalized)) return makeResult('business_summary')
+  if (/\b(wetin dey shop|what(?:'s| is) in (?:the )?shop|list (?:the )?products|show (?:the )?(?:catalogue|catalog|products)|shop catalogue|shop catalog)\b/.test(normalized)) return makeResult('shop_catalogue')
+  if (/\b(stock|how many|quantity|available|do you have|have any|remain|left)\b/.test(normalized) && !/\b(restock|low stock)\b/.test(normalized)) {
+    return mentioned.length
+      ? makeResult('check_stock', mentioned.map(entry => ({ product_name: entry.product.name, quantity: 1 })))
+      : makeResult('check_stock', [], 'none', pidgin ? 'Which item you want make I check? Mention the product name.' : 'Which item should I check? Please mention the product name.')
+  }
+  if (/\b(sold|sell|sale|don sell|i sell|i sold|customer buy|bought|purchase)\b/.test(normalized)) {
+    const items = mentioned.map(entry => {
+      const at = normalized.indexOf(entry.phrase)
+      const before = normalized.slice(0, at).trim().split(' ')
+      const token = before[before.length - 1]
+      const quantity = /^\d+$/.test(token) ? Number(token) : words[token]
+      return quantity ? { product_name: entry.product.name, quantity } : null
+    }).filter((item): item is { product_name: string; quantity: number } => Boolean(item))
+    if (items.length && items.length === mentioned.length) return makeResult('record_sale', items)
+    return makeResult('unknown', [], 'none', pidgin
+      ? 'I understand say na sale, but I need the exact product name and quantity before I prepare am.'
+      : 'I understand this may be a sale, but I need each product name and quantity before preparing it.')
+  }
+  return makeResult('unknown', [], 'none', pidgin
+    ? 'AI no dey available right now. Abeg tell me whether you want check stock, list products, see sales summary, or record a sale.'
+    : 'The AI service is unavailable. Please specify whether you want to check stock, list products, see a sales summary, or prepare a sale.')
+}
 const greeting: ChatMessage[] = [{ id: 'welcome', role: 'assistant', text: 'Good afternoon. I’m Sabi, your shop assistant. Tell me what sold, ask about stock, or request a summary. I’ll check the details and ask before recording a sale.' }]
 
 export default function App() {
@@ -48,6 +105,8 @@ export default function App() {
   const [products, setProducts] = useState<Product[]>([])
   const [sales, setSales] = useState<Sale[]>([])
   const [tab, setTab] = useState<Tab>('assistant')
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => { try { return localStorage.getItem('sabishop-theme') === 'dark' ? 'dark' : 'light' } catch { return 'light' } })
   const [messages, setMessages] = useState<ChatMessage[]>(greeting)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -57,6 +116,11 @@ export default function App() {
   const [productForm, setProductForm] = useState({ name: '', category: 'General', price: '', cost: '', stock: '', threshold: '5' })
   const [restockValues, setRestockValues] = useState<Record<string, string>>({})
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    document.documentElement.dataset.sabishopTheme = theme
+    try { localStorage.setItem('sabishop-theme', theme) } catch { /* storage may be unavailable */ }
+  }, [theme])
 
   useEffect(() => {
     if (!supabase) { setAuthReady(true); return }
@@ -243,39 +307,30 @@ export default function App() {
         addMessage({ role: 'assistant', text: cancelledText })
         return
       }
-      const { data, error } = await supabase.functions.invoke('interpret-command', {
-        body: {
-          text,
-          product_names: products.map(p => p.name),
-          conversation: messages.slice(-8).map(message => ({ role: message.role, text: message.text })),
-        },
-      })
-      if (error) {
-        console.error('AI interpreter request failed', error)
-        let detail = error.message || 'The Edge Function request failed.'
-        try {
-          const context = (error as unknown as { context?: Response }).context
-          if (context instanceof Response) {
-            const body = await context.clone().json() as { error?: string }
-            if (typeof body?.error === 'string' && body.error.trim()) detail = body.error
-          }
-        } catch {
-          // Keep the original invocation error if the response body is not JSON.
+      let interpreted: InterpretedCommand
+      let usedFallback = false
+      try {
+        const { data, error } = await supabase.functions.invoke('interpret-command', {
+          body: {
+            text,
+            product_names: products.map(p => p.name),
+            conversation: messages.slice(-8).map(message => ({ role: message.role, text: message.text })),
+          },
+        })
+        if (error) throw new Error(error.message || 'AI interpreter request failed')
+        if (!data || typeof data.intent !== 'string' || !Array.isArray(data.items) || !['english', 'pidgin'].includes(data.response_language)) {
+          throw new Error('AI interpreter returned an invalid structured result')
         }
-        throw new Error('AI interpreter request failed: ' + detail)
+        interpreted = data as InterpretedCommand
+      } catch (aiError) {
+        console.warn('AI interpreter unavailable; trying deterministic fallback', aiError)
+        interpreted = fallbackInterpretCommand(text, products)
+        usedFallback = true
+        setNotice('AI unavailable. Used local fallback for this command; please check the interpretation carefully.')
       }
-      if (!data || typeof data.intent !== 'string') {
-        console.error('AI interpreter returned an invalid response', data)
-        throw new Error('AI interpreter returned no valid intent. No transaction was recorded.')
-      }
-      const interpreted = data as {
-        intent: string
-        items: { product_name: string; quantity: number }[]
-        confidence: number
-        needs_confirmation: boolean
-        clarifying_question: string
-        response_language: 'english' | 'pidgin'
-        valuation_basis: 'cost' | 'retail' | 'both' | 'none'
+      if (usedFallback && interpreted.intent === 'unknown') {
+        addMessage({ role: 'assistant', text: interpreted.clarifying_question + '\n\nNo stock or sales records were changed.' })
+        return
       }
       const pidgin = interpreted.response_language === 'pidgin'
 
@@ -491,19 +546,24 @@ export default function App() {
     <p className="live-muted">Sample stock is labelled when first loaded. Replace it with verified quantities before using the app for real transactions.</p>
   </section></div>
 
-  return <div className="live-shell">
-    <aside className="live-sidebar">
+  return <div className="live-shell" data-theme={theme}>
+    {mobileMenuOpen && <button className="live-mobile-scrim" aria-label="Close navigation menu" onClick={() => setMobileMenuOpen(false)} />}
+    <aside className={'live-sidebar ' + (mobileMenuOpen ? 'mobile-open' : '')}>
       <div className="live-brand"><div className="live-brand-mark">S</div><div><strong>sabi<span>shop</span></strong><small>YOUR SHOP, IN CONTROL</small></div></div>
       <div className="live-shop"><div className="live-shop-icon">▦</div><div><strong>{shopTitle || 'Your shop'}</strong><small>Private retailer workspace</small></div></div>
       <div className="live-nav-label">WORKSPACE</div>
-      <button className={'live-nav ' + (tab === 'assistant' ? 'active' : '')} onClick={() => setTab('assistant')}>✦ Assistant</button>
-      <button className={'live-nav ' + (tab === 'inventory' ? 'active' : '')} onClick={() => setTab('inventory')}>▦ Inventory <span className="count">{products.length}</span></button>
-      <button className={'live-nav ' + (tab === 'sales' ? 'active' : '')} onClick={() => setTab('sales')}>↗ Sales history</button>
+      <button className={'live-nav ' + (tab === 'assistant' ? 'active' : '')} onClick={() => { setTab('assistant'); setMobileMenuOpen(false) }}><MessageSquare size={17} /> Assistant</button>
+      <button className={'live-nav ' + (tab === 'inventory' ? 'active' : '')} onClick={() => { setTab('inventory'); setMobileMenuOpen(false) }}><Package size={17} /> Inventory <span className="count">{products.length}</span></button>
+      <button className={'live-nav ' + (tab === 'sales' ? 'active' : '')} onClick={() => { setTab('sales'); setMobileMenuOpen(false) }}><History size={17} /> Sales history</button>
       <div className="live-side-foot">LIVE SUPABASE WORKSPACE<br/>Your transactions are stored in the database. AI suggestions never update stock without confirmation.</div>
-      <button className="live-nav" onClick={signOut}>↪ Sign out</button>
+      <button className="live-nav" onClick={() => { setMobileMenuOpen(false); void signOut() }}><LogOut size={17} /> Sign out</button>
     </aside>
     <main className="live-main">
-      <header className="live-topbar"><div className="live-crumb">Workspace / <strong>{tab === 'assistant' ? 'Assistant' : tab === 'inventory' ? 'Inventory' : 'Sales history'}</strong></div><span className="live-status">● CONNECTED TO DATABASE</span></header>
+      <header className="live-topbar">
+        <button className="live-menu-button" aria-label={mobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'} aria-expanded={mobileMenuOpen} onClick={() => setMobileMenuOpen(open => !open)}>{mobileMenuOpen ? <X size={20} /> : <Menu size={20} />}</button>
+        <div className="live-crumb">Workspace / <strong>{tab === 'assistant' ? 'Assistant' : tab === 'inventory' ? 'Inventory' : 'Sales history'}</strong></div>
+        <div className="live-topbar-actions"><button className="live-theme-toggle" onClick={() => setTheme(current => current === 'light' ? 'dark' : 'light')} aria-label={theme === 'light' ? 'Enable dark mode' : 'Enable light mode'} title={theme === 'light' ? 'Dark mode' : 'Light mode'}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}<span>{theme === 'light' ? 'Dark' : 'Light'}</span></button><span className="live-status">● CONNECTED TO DATABASE</span></div>
+      </header>
       <div className="live-content">
         <div className="live-heading"><div><div className="live-eyebrow">YOUR SHOP AT A GLANCE</div><h1>{tab === 'assistant' ? 'Sabi assistant' : tab === 'inventory' ? 'Inventory' : 'Sales history'}</h1><p>{tab === 'assistant' ? 'Talk naturally. Check the interpretation before committing a transaction.' : tab === 'inventory' ? 'Manage product prices, recorded stock, and restock movements.' : 'A record of completed sales committed to your database.'}</p></div>{tab === 'assistant' && <button className="live-secondary" onClick={() => void loadWorkspace(session.user.id)}>↻ Refresh data</button>}</div>
         {tab === 'assistant' && <div className="live-chat-layout">
