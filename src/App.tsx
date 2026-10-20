@@ -3,6 +3,7 @@ import { Menu, X, Sun, Moon, MessageSquare, Package, History, LogOut } from 'luc
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
 import './live.css'
+import PublicStorefront from './PublicStorefront'
 
 type Product = {
   id: string
@@ -95,7 +96,7 @@ function fallbackInterpretCommand(text: string, products: Product[]): Interprete
 }
 const greeting: ChatMessage[] = [{ id: 'welcome', role: 'assistant', text: 'Good afternoon. I’m Sabi, your shop assistant. Tell me what sold, ask about stock, or request a summary. I’ll check the details and ask before recording a sale.' }]
 
-export default function App() {
+function RetailerApp() {
   const [session, setSession] = useState<Session | null>(null)
   const [authReady, setAuthReady] = useState(false)
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin')
@@ -628,4 +629,10 @@ export default function App() {
     </main>
     {notice && <div style={{ position: 'fixed', bottom: 20, right: 20, maxWidth: 420, background: '#173e2b', color: '#fff', padding: '13px 17px', borderRadius: 12, fontSize: 12, boxShadow: '0 12px 35px #17231d30', zIndex: 10 }}><span>{notice}</span><button onClick={() => setNotice('')} style={{ marginLeft: 12, background: 'transparent', border: 0, color: '#fff' }}>×</button></div>}
   </div>
+}
+
+export default function App() {
+  const path = window.location.pathname.replace(/\\/+$/, '') || '/'
+  if (path === '/storefront' || path === '/marketplace') return <PublicStorefront />
+  return <RetailerApp />
 }
