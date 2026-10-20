@@ -632,7 +632,7 @@ function RetailerApp() {
 }
 
 export default function App() {
-  const path = window.location.pathname.replace(/\\/+$/, '') || '/'
+  const path = window.location.pathname.replace(/\/+$/, '') || '/'
   if (path === '/storefront' || path === '/marketplace') return <PublicStorefront />
   return <RetailerApp />
 }
