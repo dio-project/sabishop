@@ -24,7 +24,7 @@ begin
   end if;
 
   return query
-  select r.id, s.name, p.name, r.quantity, r.status, r.expires_at, r.created_at
+  select r.id, s.name, p.name, r.quantity, r.status::text, r.expires_at, r.created_at
   from public.reservations as r
   join public.shops as s on s.id = r.shop_id
   join public.products as p on p.id = r.product_id
