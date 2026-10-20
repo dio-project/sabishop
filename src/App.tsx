@@ -220,7 +220,12 @@ export default function App() {
     setBusy(true)
     try {
       const previousUserMessage = [...messages].reverse().find(message => message.role === 'user')
-      const pendingDraftMessage = [...messages].reverse().find(message => Boolean(message.draft))
+      // Only the immediately preceding assistant message can be a pending sale.
+      // Do not let a stale draft from earlier in the chat intercept an unrelated command.
+      const latestMessage = messages[messages.length - 1]
+      const pendingDraftMessage = latestMessage?.role === 'assistant' && latestMessage.draft
+        ? latestMessage
+        : undefined
       const isCancelRequest = /^(cancel|cancel am|cancel that|abeg cancel|abeg cancel am|no|no cancel|forget am|forget that)$/i.test(text)
       if (isCancelRequest && pendingDraftMessage?.draft) {
         const pidgin = looksLikePidgin(text) || Boolean(previousUserMessage && looksLikePidgin(previousUserMessage.text))
