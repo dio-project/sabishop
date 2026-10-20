@@ -292,16 +292,16 @@ export default function App() {
       if (interpreted.intent === 'check_stock') {
         const selected = interpreted.items.map(item => resolveProduct(item.product_name)).filter((p): p is Product => Boolean(p))
         if (!selected.length) {
-          const asksForCatalogue = /(wettin dey shop|what (?:do you have|is in (?:the )?shop|items? (?:do you have|are available)|products? (?:do you have|are available)|show (?:me )?(?:all )?(?:items|products|stock)|list (?:all )?(?:items|products|stock)|wetin una get|wetin dey available|which products)/i.test(text)
+          const asksForCatalogue = /(wettin dey shop|what (?:do you have|is in (?:the )?shop|show (?:me )?(?:all )?(?:items|products|stock)|list (?:all )?(?:items|products|stock)|wetin una get|wetin dey available|which products)/i.test(text)
           if (asksForCatalogue) {
             addMessage({ role: 'assistant', text: products.length
-              ? 'Here is your recorded catalogue:\\n' + products.map(p => '• ' + p.name + ': ' + p.stock_quantity + ' units at ' + money(Number(p.selling_price_kobo)) + ' each').join('\\n')
+              ? 'Here is your recorded catalogue:\n' + products.map(p => '• ' + p.name + ': ' + p.stock_quantity + ' units at ' + money(Number(p.selling_price_kobo)) + ' each').join('\n')
               : 'There are no active products in your catalogue yet. Add products in Inventory first.' })
           } else {
             addMessage({ role: 'assistant', text: 'Which item should I check? Current catalogue: ' + products.map(p => p.name).join(', ') + '.' })
           }
         } else {
-          addMessage({ role: 'assistant', text: selected.map(p => p.name + ': ' + p.stock_quantity + ' units recorded, ' + money(Number(p.selling_price_kobo)) + ' each' + (p.stock_quantity <= p.low_stock_threshold ? ' — at or below the restock threshold.' : '.')).join('\\n') })
+          addMessage({ role: 'assistant', text: selected.map(p => p.name + ': ' + p.stock_quantity + ' units recorded, ' + money(Number(p.selling_price_kobo)) + ' each' + (p.stock_quantity <= p.low_stock_threshold ? ' — at or below the restock threshold.' : '.')).join('\n') })
         }
         return
       }
