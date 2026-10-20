@@ -10,6 +10,7 @@
 - Atomic, idempotent sale RPC that checks stock, snapshots price/cost, updates inventory, and writes stock-movement audit rows
 - Atomic stock adjustment/restock RPC with audit records
 - Authenticated Gemini intent-interpreter Edge Function (\`interpret-command\`)
+- Persistent per-user chat history, message timestamps, and Nigerian Pidgin command support
 - Browser UI connected to Supabase Auth, products, sales, sale confirmation, and restocking
 
 The first login creates a private shop and loads a clearly labelled sample catalogue if the shop has no products. Replace sample quantities and prices with verified real inventory before using it as an operational ledger.
@@ -34,13 +35,14 @@ Only a Supabase publishable/legacy anon key belongs in the browser. Never expose
 
 ## Enable live AI interpretation
 
-The Edge Function is deployed with JWT verification enabled. Add a Gemini API key as a **server-side Edge Function secret** named \`GEMINI_API_KEY\` in the Supabase Dashboard:
+The Edge Function is deployed with JWT verification enabled. Configure Groq as the primary provider and retain Gemini as a fallback:
 
-1. Open [SabiShop Edge Function secrets](https://supabase.com/dashboard/project/qatkotmliqxrzoltkmfu/functions/secrets).
-2. Add \`GEMINI_API_KEY\` with a valid Google AI Studio/Gemini API key.
-3. Save the secret, then retry a command in the app.
+1. Create a Groq API key at [console.groq.com/keys](https://console.groq.com/keys).
+2. Open [SabiShop Edge Function secrets](https://supabase.com/dashboard/project/qatkotmliqxrzoltkmfu/functions/secrets).
+3. Add the key as a server-side secret named `GROQ_API_KEY`. The function uses Groq's `openai/gpt-oss-120b` model.
+4. Keep `GEMINI_API_KEY` configured as the fallback provider, then retry a command in the app.
 
-Do not commit the key or paste it into frontend environment variables. Until the secret is configured, the UI can use limited exact-product-name fallback for a few commands; full natural-language interpretation requires the Gemini key.
+Never commit either provider key or put it in a `VITE_*` variable. Groq's free-tier limits can change and are not an uptime guarantee. If Groq fails, the function tries Gemini with a short timeout. Without a working provider key, the UI can use only limited exact-name fallback.
 
 ## Product rules and current scope
 
