@@ -292,7 +292,7 @@ export default function App() {
       if (interpreted.intent === 'check_stock') {
         const selected = interpreted.items.map(item => resolveProduct(item.product_name)).filter((p): p is Product => Boolean(p))
         if (!selected.length) {
-          const asksForCatalogue = /(wettin dey shop|what (?:do you have|is in (?:the )?shop|show (?:me )?(?:all )?(?:items|products|stock)|list (?:all )?(?:items|products|stock)|wetin una get|wetin dey available|which products)/i.test(text)
+          const asksForCatalogue = /(wettin dey shop|what do you have|what is in the shop|what is in shop|show me all items|show all items|show me products|show products|list products|list stock|wetin una get|wetin dey available|which products)/i.test(text)
           if (asksForCatalogue) {
             addMessage({ role: 'assistant', text: products.length
               ? 'Here is your recorded catalogue:\n' + products.map(p => '• ' + p.name + ': ' + p.stock_quantity + ' units at ' + money(Number(p.selling_price_kobo)) + ' each').join('\n')
