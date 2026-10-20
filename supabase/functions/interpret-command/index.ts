@@ -37,7 +37,7 @@ function makePrompt(productNames: string[], userText: string, conversation: Conv
     'Product catalogue: ' + JSON.stringify(productNames),
     'Recent conversation (oldest to newest): ' + JSON.stringify(conversation),
     'Current user message: ' + JSON.stringify(userText),
-  ].join('\\n\\n')
+  ].join('\n\n')
 }
 
 async function requestGroq(apiKey: string, prompt: string): Promise<string> {
