@@ -206,7 +206,7 @@ export default function App() {
   function fallbackInterpretation(text: string) {
     const lower = text.toLowerCase()
     if (/(profit|revenue|sales today|how much.*today|business summary|performance)/.test(lower)) return { intent: 'business_summary', items: [], confidence: 0.5, needs_confirmation: false, clarifying_question: '' }
-    if (/(restock|low stock|running low|reorder|buy more|buy am|need to buy|stock don low)/.test(lower)) return { intent: 'restock_advice', items: [], confidence: 0.5, needs_confirmation: false, clarifying_question: '' }
+    if (/(restock|low stock|running low|reorder|buy more|buy am|need to buy|stock don low|suppose buy|buy put for shop|wettin.*buy|buy today)/.test(lower)) return { intent: 'restock_advice', items: [], confidence: 0.5, needs_confirmation: false, clarifying_question: '' }
     const matched = products.filter(p => lower.includes(p.name.toLowerCase()))
     if (/(stock|available|do you have|how many|in stock|remain|remaining|dey for|abeg.*(stock|how many)|how much.*remain)/.test(lower)) return { intent: 'check_stock', items: matched.map(p => ({ product_name: p.name, quantity: 1 })), confidence: matched.length ? 0.7 : 0.3, needs_confirmation: false, clarifying_question: '' }
     if (/(sold|sell|sale|record|customer bought|just sold|don sell|dem buy|customer buy|i sell)/.test(lower)) {
@@ -229,6 +229,19 @@ export default function App() {
     addMessage({ role: 'user', text })
     setBusy(true)
     try {
+      const lowerText = text.toLowerCase()
+      if (/(\\bowe\\b|\\bowes\\b|\\bdebt\\b|\\bcredit\\b|\\bborrowed\\b|\\bloan\\b|still dey owe|dey owe me|customer owe)/i.test(lowerText)) {
+        addMessage({ role: 'assistant', text: 'Debt tracking is not enabled in this demo yet. I have not changed any records. You can use Inventory, sales recording, stock checks, and restock alerts.' })
+        return
+      }
+      if (/(you don chop|you don chop food|have you eaten|did you eat)/i.test(lowerText)) {
+        addMessage({ role: 'assistant', text: 'I do not eat, but I am ready to help with your shop. You can ask about stock, sales, or restocking.' })
+        return
+      }
+      if (/(expand my market|grow my business|business growth|marketing advice)/i.test(lowerText)) {
+        addMessage({ role: 'assistant', text: 'Business-growth advice is not connected to your shop records yet. In this demo I can report sales, check stock, and identify products at or below their restock thresholds.' })
+        return
+      }
       let interpreted: ReturnType<typeof fallbackInterpretation>
       const { data, error } = await supabase.functions.invoke('interpret-command', {
         body: { text, product_names: products.map(p => p.name) },
@@ -279,9 +292,16 @@ export default function App() {
       if (interpreted.intent === 'check_stock') {
         const selected = interpreted.items.map(item => resolveProduct(item.product_name)).filter((p): p is Product => Boolean(p))
         if (!selected.length) {
-          addMessage({ role: 'assistant', text: 'Which item should I check? Current catalogue: ' + products.map(p => p.name).join(', ') + '.' })
+          const asksForCatalogue = /(wettin dey shop|what (?:do you have|is in (?:the )?shop|items? (?:do you have|are available)|products? (?:do you have|are available)|show (?:me )?(?:all )?(?:items|products|stock)|list (?:all )?(?:items|products|stock)|wetin una get|wetin dey available|which products)/i.test(text)
+          if (asksForCatalogue) {
+            addMessage({ role: 'assistant', text: products.length
+              ? 'Here is your recorded catalogue:\\n' + products.map(p => '• ' + p.name + ': ' + p.stock_quantity + ' units at ' + money(Number(p.selling_price_kobo)) + ' each').join('\\n')
+              : 'There are no active products in your catalogue yet. Add products in Inventory first.' })
+          } else {
+            addMessage({ role: 'assistant', text: 'Which item should I check? Current catalogue: ' + products.map(p => p.name).join(', ') + '.' })
+          }
         } else {
-          addMessage({ role: 'assistant', text: selected.map(p => p.name + ': ' + p.stock_quantity + ' units recorded, ' + money(Number(p.selling_price_kobo)) + ' each' + (p.stock_quantity <= p.low_stock_threshold ? ' — at or below the restock threshold.' : '.')).join('\n') })
+          addMessage({ role: 'assistant', text: selected.map(p => p.name + ': ' + p.stock_quantity + ' units recorded, ' + money(Number(p.selling_price_kobo)) + ' each' + (p.stock_quantity <= p.low_stock_threshold ? ' — at or below the restock threshold.' : '.')).join('\\n') })
         }
         return
       }
