@@ -230,8 +230,9 @@ export default function App() {
         setMessages(prev => prev.map(message => message.id === pendingDraftMessage.id
           ? { ...message, draft: undefined, text: cancelledText }
           : message))
-        void supabase.from('chat_messages').update({ text: cancelledText, draft: null })
+        const { error: cancelSaveError } = await supabase.from('chat_messages').update({ text: cancelledText, draft: null })
           .eq('id', pendingDraftMessage.id).eq('user_id', session.user.id)
+        if (cancelSaveError) setNotice('The draft was cancelled in this session, but chat history could not be updated: ' + cancelSaveError.message)
         addMessage({ role: 'assistant', text: cancelledText })
         return
       }
@@ -369,7 +370,10 @@ export default function App() {
         ? 'I no too understand wetin you want. You fit ask about stock, restock, today sales, total stock value, or tell me wetin you sell.'
         : 'I’m not sure what you want me to do. Try a stock check, a restock review, today’s sales, total stock value, or a sale with exact product names.') })
     } catch (error) {
-      addMessage({ role: 'assistant', text: error instanceof Error ? error.message : 'I could not process that request. No transaction was recorded.' })
+      const detail = error instanceof Error ? error.message : 'I could not process that request.'
+      addMessage({ role: 'assistant', text: looksLikePidgin(text)
+        ? 'I no fit process that request. I never record any transaction. Details: ' + detail
+        : detail + ' No transaction was recorded.' })
     } finally {
       setBusy(false)
     }
@@ -377,6 +381,8 @@ export default function App() {
 
   async function confirmSale(draft: SaleDraft) {
     if (!supabase || !shopId || busy) return
+    const draftMessage = messages.find(m => m.draft?.idempotency_key === draft.idempotency_key)
+    const pidgin = looksLikePidgin(draftMessage?.text ?? '')
     setBusy(true)
     try {
       const { data, error } = await supabase.rpc('record_sale', {
@@ -388,8 +394,9 @@ export default function App() {
       if (error) throw error
       const result = data as { sale_id?: string; total_kobo?: number; duplicate?: boolean }
       if (!result?.sale_id) throw new Error('The database did not confirm the sale.')
-      const recordedText = 'Sale recorded in Supabase. Total: ' + money(Number(result.total_kobo ?? draft.total_kobo)) + (result.duplicate ? ' (safe retry; no duplicate stock deduction).' : '')
-      const draftMessage = messages.find(m => m.draft?.idempotency_key === draft.idempotency_key)
+      const recordedText = pidgin
+        ? 'Sale don record for Supabase. Total: ' + money(Number(result.total_kobo ?? draft.total_kobo)) + (result.duplicate ? ' (safe retry; stock no deduct twice).' : '')
+        : 'Sale recorded in Supabase. Total: ' + money(Number(result.total_kobo ?? draft.total_kobo)) + (result.duplicate ? ' (safe retry; no duplicate stock deduction).' : '')
       setMessages(prev => prev.map(m => m.draft?.idempotency_key === draft.idempotency_key
         ? { ...m, draft: undefined, text: recordedText }
         : m))
@@ -399,10 +406,14 @@ export default function App() {
           .eq('id', draftMessage.id).eq('user_id', session.user.id)
         if (chatUpdateError) setNotice('Sale recorded, but chat history update failed: ' + chatUpdateError.message)
       }
-      addMessage({ role: 'assistant', text: 'Database confirmed the sale. I’m refreshing your stock and sales totals.' })
+      addMessage({ role: 'assistant', text: pidgin
+        ? 'Database don confirm the sale. I dey refresh your stock and sales total.'
+        : 'Database confirmed the sale. I’m refreshing your stock and sales totals.' })
       await loadWorkspace(session!.user.id)
     } catch (error) {
-      addMessage({ role: 'assistant', text: 'Sale was not confirmed by the database: ' + (error instanceof Error ? error.message : 'unknown error') + '. Check the inventory and try again; do not assume it was recorded.' })
+      addMessage({ role: 'assistant', text: pidgin
+        ? 'Database never confirm the sale: ' + (error instanceof Error ? error.message : 'unknown error') + '. Check your stock and try again; no assume say e don record.'
+        : 'Sale was not confirmed by the database: ' + (error instanceof Error ? error.message : 'unknown error') + '. Check the inventory and try again; do not assume it was recorded.' })
     } finally {
       setBusy(false)
     }
@@ -496,9 +507,9 @@ export default function App() {
                 {message.draft.items.map(line => <div className="live-draft-row" key={line.product_id}><span>{line.quantity} × {line.name} · {money(line.unit_price_kobo)} each</span><strong>{money(line.quantity * line.unit_price_kobo)}</strong></div>)}
                 <div className="live-draft-total"><span>Total sale value</span><span>{money(message.draft.total_kobo)}</span></div>
                 <p className="live-muted">{looksLikePidgin(message.text) ? 'Stock go change only after database confirmation.' : 'Stock is updated only after database confirmation.'}</p>
-                <button className="live-primary" disabled={busy} onClick={() => void confirmSale(message.draft!)}>{busy ? 'Saving…' : 'Confirm and record sale'}</button>
+                <button className="live-primary" disabled={busy} onClick={() => void confirmSale(message.draft!)}>{busy ? (looksLikePidgin(message.text) ? 'I dey save…' : 'Saving…') : (looksLikePidgin(message.text) ? 'Confirm am and record sale' : 'Confirm and record sale')}</button>
               </div>}<small className="live-msg-meta"><span>{message.role === 'user' ? 'YOU' : 'SABI'}</span><time dateTime={message.created_at ?? new Date().toISOString()}>{new Intl.DateTimeFormat('en-NG', { hour: '2-digit', minute: '2-digit', hour12: true }).format(new Date(message.created_at ?? Date.now()))}</time></small></div>)}
-              {busy && <div className="live-msg">{looksLikePidgin(messages.filter(message => message.role === 'user').at(-1)?.text ?? '') ? 'I dey work…' : 'Working…'}<small>SABI</small></div>}
+              {busy && <div className="live-msg">{looksLikePidgin(messages.filter(message => message.role === 'user').slice(-1)[0]?.text ?? '') ? 'I dey work…' : 'Working…'}<small>SABI</small></div>}
               <div ref={messagesEndRef} aria-hidden="true" />
             </div>
             <div className="live-composer"><form onSubmit={e => { e.preventDefault(); void sendCommand() }}><input value={input} onChange={e => setInput(e.target.value)} placeholder="e.g. I sold 3 Indomie / Abeg, how many remain?" aria-label="Message Sabi" /><button className="live-primary" disabled={busy || !input.trim()}>Send</button></form>
