@@ -33,6 +33,17 @@ Deno.serve(async (req: Request) => {
   const user = data.user;
   const isRetailer = user.user_metadata?.account_type !== "customer";
   try {
+    if (!isRetailer) {
+      // Reservations are currently stored as guest bookings, so remove bookings tied
+      // to the customer's verified account phone when deleting that account.
+      const phone = String(user.user_metadata?.phone || "").trim();
+      if (phone) {
+        const { error: reservationError } = await admin.from("reservations")
+          .delete().eq("customer_contact", phone);
+        if (reservationError) throw reservationError;
+      }
+    }
+
     if (isRetailer) {
       const { data: memberships, error } = await admin.from("shop_members").select("shop_id").eq("user_id", user.id);
       if (error) throw error;
