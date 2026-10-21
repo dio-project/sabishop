@@ -106,6 +106,7 @@ function RetailerApp() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [shopName, setShopName] = useState('')
+  const [shopLocation, setShopLocation] = useState('')
   const [shopId, setShopId] = useState('')
   const [shopTitle, setShopTitle] = useState('')
   const [products, setProducts] = useState<Product[]>([])
@@ -207,6 +208,16 @@ function RetailerApp() {
         id = data as string
       }
       if (!id) throw new Error('Could not create or load your shop.')
+      const metadata = session?.user.user_metadata
+      if (metadata?.account_type === 'retailer' && metadata?.shop_location) {
+        const { error: profileError } = await supabase.rpc('update_shop_profile', {
+          p_shop_id: id,
+          p_owner_name: String(metadata.full_name || ''),
+          p_phone: String(metadata.phone || ''),
+          p_address: String(metadata.shop_location || ''),
+        })
+        if (profileError) throw new Error('Shop created, but retailer profile details could not be saved: ' + profileError.message)
+      }
       setShopId(id)
       const { data: shop, error: shopError } = await supabase.from('shops').select('name').eq('id', id).single()
       if (shopError) throw shopError
@@ -243,9 +254,13 @@ function RetailerApp() {
     setAuthError('')
     try {
       if (authMode === 'signup') {
-        const { data, error } = await supabase.auth.signUp({ email: email.trim(), password, options: { data: { account_type: accountType, full_name: fullName.trim(), phone: phone.trim(), ...(accountType === 'retailer' ? { shop_name: shopName.trim() } : {}) } } })
+        const { data, error } = await supabase.auth.signUp({ email: email.trim(), password, options: { data: { account_type: accountType, full_name: fullName.trim(), phone: phone.trim(), ...(accountType === 'retailer' ? { shop_name: shopName.trim(), shop_location: shopLocation.trim() } : {}) } } })
         if (error) {
           const message = error.message.toLowerCase()
+          const code = String((error as { code?: string }).code || '').toLowerCase()
+          if (code === 'over_email_send_rate_limit' || message.includes('email rate limit') || message.includes('rate limit exceeded')) {
+            throw new Error('Supabase has temporarily limited confirmation emails because too many were requested. Wait before trying again; repeated attempts will not fix it. For reliable demo signups, configure a custom SMTP provider in Supabase Auth settings.')
+          }
           if (message.includes('already registered') || message.includes('already exists') || message.includes('user already')) throw new Error('This email is already linked to an account. Sign in with it, or use a different email address.')
           throw error
         }
@@ -593,8 +608,10 @@ function RetailerApp() {
     <p>{accountType === 'retailer' ? 'Manage stock, record sales, and use your private shop assistant.' : 'Find local shops, reserve products, and manage your reservations.'}</p>
     <div className="live-account-type" role="group" aria-label="Choose account type"><button type="button" className={accountType === 'retailer' ? 'selected' : ''} onClick={() => { setAccountType('retailer'); setAuthError('') }}>Retailer</button><button type="button" className={accountType === 'customer' ? 'selected' : ''} onClick={() => { setAccountType('customer'); setAuthError('') }}>Customer</button></div>
     <form onSubmit={submitAuth}>
-      {authMode === 'signup' && <div className="live-field"><label>{accountType === 'retailer' ? 'Shop name' : 'Full name'}</label><input className="live-input" value={accountType === 'retailer' ? shopName : fullName} onChange={e => accountType === 'retailer' ? setShopName(e.target.value) : setFullName(e.target.value)} placeholder={accountType === 'retailer' ? 'e.g. Choba Corner Store' : 'Your full name'} required minLength={2} maxLength={100} /></div>}
-      {authMode === 'signup' && accountType === 'customer' && <div className="live-field"><label>Phone number</label><input className="live-input" type="tel" value={phone} onChange={e => setPhone(e.target.value)} required maxLength={40} autoComplete="tel" /></div>}
+      {authMode === 'signup' && <div className="live-field"><label>Full name</label><input className="live-input" value={fullName} onChange={e => setFullName(e.target.value)} placeholder="Your full name" required minLength={2} maxLength={100} autoComplete="name" /></div>}
+      {authMode === 'signup' && accountType === 'retailer' && <div className="live-field"><label>Shop name</label><input className="live-input" value={shopName} onChange={e => setShopName(e.target.value)} placeholder="e.g. Choba Corner Store" required minLength={2} maxLength={100} autoComplete="organization" /></div>}
+      {authMode === 'signup' && <div className="live-field"><label>Phone number</label><input className="live-input" type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="e.g. 08012345678" required maxLength={40} autoComplete="tel" /></div>}
+      {authMode === 'signup' && accountType === 'retailer' && <div className="live-field"><label>Shop location</label><input className="live-input" value={shopLocation} onChange={e => setShopLocation(e.target.value)} placeholder="e.g. Mile 3, Diobu, Port Harcourt" required minLength={3} maxLength={200} autoComplete="street-address" /></div>}
       <div className="live-field"><label>Email address</label><input className="live-input" type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email" /></div>
       <div className="live-field"><label>Password (at least 8 characters)</label><input className="live-input" type="password" value={password} onChange={e => setPassword(e.target.value)} required minLength={8} autoComplete={authMode === 'signin' ? 'current-password' : 'new-password'} /></div>
       {authError && <div className="live-alert">{authError}</div>}
