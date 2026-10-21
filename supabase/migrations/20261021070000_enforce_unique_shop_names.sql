@@ -1,14 +1,18 @@
 -- Enforce case-insensitive shop-name uniqueness and improve signup validation.
 -- The newer duplicate was an empty test shop (no sales or reservations), so retain it
 -- and give it a distinct name rather than deleting any records.
-update public.shops
-set name = name || ' (2)'
-where id = '80453dae-d891-40db-aaca-1ae9a2fc4bd5'
-  and exists (
-    select 1 from public.shops s
-    where s.id = 'a51f3d2c-8152-45b2-b20c-a8cdefd94121'
-      and lower(btrim(s.name)) = lower(btrim(public.shops.name))
-  );
+with ranked_shops as (
+  select id, name,
+    row_number() over (partition by lower(btrim(name)) order by created_at, id) as duplicate_number,
+    count(*) over (partition by lower(btrim(name))) as duplicate_count
+  from public.shops
+)
+update public.shops target
+set name = ranked_shops.name || ' (' || ranked_shops.duplicate_number || ')'
+from ranked_shops
+where target.id = ranked_shops.id
+  and ranked_shops.duplicate_count > 1
+  and ranked_shops.duplicate_number > 1;
 
 create unique index if not exists shops_name_unique_ci
   on public.shops (lower(btrim(name)));
