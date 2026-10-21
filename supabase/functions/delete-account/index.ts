@@ -50,12 +50,18 @@ Deno.serve(async (req: Request) => {
       const shopIds = (memberships || []).map((row: { shop_id: string }) => row.shop_id);
       if (shopIds.length) {
         const { error: shopError } = await admin.from("shops").update({
-          is_public: false, owner_name: null, phone: null,
+          is_public: false, owner_name: null, phone: null, created_by: null,
         }).in("id", shopIds);
         if (shopError) throw shopError;
         const { error: memberError } = await admin.from("shop_members").delete().eq("user_id", user.id);
         if (memberError) throw memberError;
       }
+      // Some older shops may still reference the creator even if membership is missing.
+      // Anonymize that FK too, otherwise auth.users deletion fails with shops_created_by_fkey.
+      const { error: createdShopError } = await admin.from("shops").update({
+        is_public: false, owner_name: null, phone: null, created_by: null,
+      }).eq("created_by", user.id);
+      if (createdShopError) throw createdShopError;
     }
     const { error: deleteError } = await admin.auth.admin.deleteUser(user.id);
     if (deleteError) throw deleteError;
