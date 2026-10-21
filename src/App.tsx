@@ -105,7 +105,7 @@ function RetailerApp() {
   const [phone, setPhone] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [shopName, setShopName] = useState('Dio’s Provision Store')
+  const [shopName, setShopName] = useState('')
   const [shopId, setShopId] = useState('')
   const [shopTitle, setShopTitle] = useState('')
   const [products, setProducts] = useState<Product[]>([])
@@ -201,7 +201,8 @@ function RetailerApp() {
       if (membershipError) throw membershipError
       let id = membership?.shop_id as string | undefined
       if (!id) {
-        const { data, error } = await supabase.rpc('create_shop_with_owner', { p_name: shopName.trim() || 'My Provision Store' })
+        const requestedShopName = String(session?.user.user_metadata?.shop_name || shopName).trim()
+        const { data, error } = await supabase.rpc('create_shop_with_owner', { p_name: requestedShopName || 'My Provision Store' })
         if (error) throw error
         id = data as string
       }
@@ -242,8 +243,16 @@ function RetailerApp() {
     setAuthError('')
     try {
       if (authMode === 'signup') {
-        const { data, error } = await supabase.auth.signUp({ email: email.trim(), password, options: { data: { account_type: accountType, full_name: fullName.trim(), phone: phone.trim() } } })
-        if (error) throw error
+        const { data, error } = await supabase.auth.signUp({ email: email.trim(), password, options: { data: { account_type: accountType, full_name: fullName.trim(), phone: phone.trim(), ...(accountType === 'retailer' ? { shop_name: shopName.trim() } : {}) } } })
+        if (error) {
+          const message = error.message.toLowerCase()
+          if (message.includes('already registered') || message.includes('already exists') || message.includes('user already')) throw new Error('This email is already linked to an account. Sign in with it, or use a different email address.')
+          throw error
+        }
+        if (data.user && !data.session && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+          setAuthError('This email is already linked to an account. Sign in with it, or use a different email address.')
+          return
+        }
         if (!data.session) {
           setAuthError('Account created. Check your email for the confirmation link, then sign in.')
         } else {
@@ -268,6 +277,24 @@ function RetailerApp() {
     await supabase.auth.signOut()
     setMessages(greeting)
     setTab('assistant')
+  }
+
+  async function deleteAccount() {
+    if (!supabase || !session) return
+    const confirmed = window.confirm('Delete this SabiShop account? This cannot be undone. Retailer sales history will be retained, but the shop will be hidden from customers and public contact details removed.')
+    if (!confirmed) return
+    setBusy(true)
+    setAuthError('')
+    try {
+      const { error } = await supabase.functions.invoke('delete-account', { method: 'POST' })
+      if (error) throw error
+      await supabase.auth.signOut()
+      window.location.replace('/')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Could not delete the account. Please try again.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   function addMessage(message: Omit<ChatMessage, 'id' | 'created_at'>) {
@@ -555,13 +582,13 @@ function RetailerApp() {
 
   if (!authReady) return <div className="live-auth-wrap" data-theme={theme}><div className="live-panel live-auth">Loading SabiShop…</div></div>
   if (!supabase) return <div className="live-auth-wrap"><div className="live-panel live-auth"><h1>SabiShop needs configuration</h1><p>Supabase client configuration is missing. Set the public project URL and publishable key.</p></div></div>
-  if (!session) return <div className="live-auth-wrap"><section className="live-panel live-auth">
+  if (!session) return <div className="live-auth-wrap" data-theme={theme}><section className="live-panel live-auth">
     <div className="live-auth-brand-row"><div className="live-brand"><div className="live-brand-mark">S</div><div><strong>sabi<span>shop</span></strong><small>YOUR SHOP, IN CONTROL</small></div></div><button className="live-theme-toggle" type="button" onClick={() => setTheme(current => current === "light" ? "dark" : "light")} aria-label={theme === "light" ? "Enable dark mode" : "Enable light mode"}>{theme === "light" ? <Moon size={17}/> : <Sun size={17}/>}<span>{theme === "light" ? "Dark" : "Light"}</span></button></div>
     <h1>{authMode === 'signin' ? 'Welcome back.' : accountType === 'retailer' ? 'Set up your shop.' : 'Create your customer account.'}</h1>
     <p>{accountType === 'retailer' ? 'Manage stock, record sales, and use your private shop assistant.' : 'Find local shops, reserve products, and manage your reservations.'}</p>
     <div className="live-account-type" role="group" aria-label="Choose account type"><button type="button" className={accountType === 'retailer' ? 'selected' : ''} onClick={() => { setAccountType('retailer'); setAuthError('') }}>Retailer</button><button type="button" className={accountType === 'customer' ? 'selected' : ''} onClick={() => { setAccountType('customer'); setAuthError('') }}>Customer</button></div>
     <form onSubmit={submitAuth}>
-      {authMode === 'signup' && <div className="live-field"><label>{accountType === 'retailer' ? 'Shop name' : 'Full name'}</label><input className="live-input" value={accountType === 'retailer' ? shopName : fullName} onChange={e => accountType === 'retailer' ? setShopName(e.target.value) : setFullName(e.target.value)} required minLength={2} maxLength={100} /></div>}
+      {authMode === 'signup' && <div className="live-field"><label>{accountType === 'retailer' ? 'Shop name' : 'Full name'}</label><input className="live-input" value={accountType === 'retailer' ? shopName : fullName} onChange={e => accountType === 'retailer' ? setShopName(e.target.value) : setFullName(e.target.value)} placeholder={accountType === 'retailer' ? 'e.g. Choba Corner Store' : 'Your full name'} required minLength={2} maxLength={100} /></div>}
       {authMode === 'signup' && accountType === 'customer' && <div className="live-field"><label>Phone number</label><input className="live-input" type="tel" value={phone} onChange={e => setPhone(e.target.value)} required maxLength={40} autoComplete="tel" /></div>}
       <div className="live-field"><label>Email address</label><input className="live-input" type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email" /></div>
       <div className="live-field"><label>Password (at least 8 characters)</label><input className="live-input" type="password" value={password} onChange={e => setPassword(e.target.value)} required minLength={8} autoComplete={authMode === 'signin' ? 'current-password' : 'new-password'} /></div>
@@ -583,6 +610,7 @@ function RetailerApp() {
       <button className={'live-nav ' + (tab === 'sales' ? 'active' : '')} onClick={() => { setTab('sales'); setMobileMenuOpen(false) }}><History size={17} /> Sales history</button>
       <div className="live-side-foot">LIVE SUPABASE WORKSPACE<br/>Your transactions are stored in the database. AI suggestions never update stock without confirmation.</div>
       <button className="live-nav" onClick={() => { setMobileMenuOpen(false); void signOut() }}><LogOut size={17} /> Sign out</button>
+      <button className="live-nav live-danger-nav" disabled={busy} onClick={() => { setMobileMenuOpen(false); void deleteAccount() }}>Delete account</button>
     </aside>
     <main className="live-main">
       <header className="live-topbar">
