@@ -291,7 +291,12 @@ function RetailerApp() {
       await supabase.auth.signOut()
       window.location.replace('/')
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Could not delete the account. Please try again.')
+      let message = error instanceof Error ? error.message : 'Could not delete the account. Please try again.'
+      const response = error && typeof error === 'object' && 'context' in error ? (error as { context?: unknown }).context : null
+      if (response instanceof Response) {
+        try { const body = await response.clone().json() as { error?: string; message?: string }; message = body.error || body.message || message } catch { /* retain original error */ }
+      }
+      setNotice(message)
     } finally {
       setBusy(false)
     }
