@@ -1,3 +1,6 @@
+-- Allow account deletion to anonymize shop creators while preserving business history.
+alter table public.shops alter column created_by drop not null;
+
 -- Enforce case-insensitive shop-name uniqueness and improve signup validation.
 -- The newer duplicate was an empty test shop (no sales or reservations), so retain it
 -- and give it a distinct name rather than deleting any records.
